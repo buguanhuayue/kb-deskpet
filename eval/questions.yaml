@@ -1,0 +1,23 @@
+# 检索评测集（P0 结束必须跑，30 题）
+# 结构：question 必填；expect_doc 是期望命中的文档标题关键字；
+#      expect_none: true 表示库里没有答案，正确答案是拒答。
+# 打分：recall@5 看 expect_doc 是否出现在前 5；not_found 看是否被判为拒答。
+
+- question: 差旅住宿费的报销标准是多少？
+  expect_doc: 差旅
+- question: 报销需要哪些材料？
+  expect_doc: 报销
+- question: 年假可以分段休吗？
+  expect_doc: 休假
+- question: 加班到几点可以打车报销？
+  expect_doc: 报销
+- question: 服务器申请流程是什么？
+  expect_doc: 服务器
+
+# ---- 以下为"库里没有"，用来验证拒答闸门不误伤 ----
+- question: 明天天气怎么样？
+  expect_none: true
+- question: 公司股票代码是多少？
+  expect_none: true
+- question: 竞争对手去年的营收是多少？
+  expect_none: true

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>kb-deskpet · P0 验收台</title>
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--line:#e3e6ea;--text:#1b1f24;--muted:#6b7280;--accent:#2f6fed;--ok:#0f9960;--warn:#c2410c}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:860px;margin:0 auto;padding:28px 20px 80px}
+  h1{font-size:19px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  input[type=text],input[type=password]{flex:1;min-width:180px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;font:inherit}
+  button{padding:8px 14px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:7px;font:inherit;cursor:pointer}
+  button.ghost{background:#fff;color:var(--accent)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .tag{font-size:12px;padding:2px 7px;border-radius:999px;background:#eef2ff;color:#3b4fd8}
+  .tag.ok{background:#e7f6ee;color:var(--ok)} .tag.bad{background:#fdecea;color:#b42318}
+  .ans{white-space:pre-wrap;min-height:20px}
+  .cite{border-top:1px dashed var(--line);margin-top:10px;padding-top:10px;font-size:13px;color:var(--muted)}
+  .cite b{color:var(--text);font-weight:600}
+  .drop{border:1.5px dashed var(--line);border-radius:9px;padding:18px;text-align:center;color:var(--muted);cursor:pointer}
+  .drop.over{border-color:var(--accent);color:var(--accent);background:#f5f8ff}
+  .list{font-size:13px;color:var(--muted);margin-top:8px}
+  .list div{display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-bottom:1px solid #f0f2f4}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>kb-deskpet · P0 验收台</h1>
+  <div class="sub">上传 → 入库 → 提问 → 带页码引用。只用来验收，不是产品界面。</div>
+
+  <div class="card">
+    <div class="row">
+      <input id="token" type="password" placeholder="API token（make seed 生成的）" />
+      <button class="ghost" onclick="saveToken()">记住</button>
+      <button class="ghost" onclick="checkHealth()">自检</button>
+      <span id="health" class="tag">未检查</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="drop" id="drop">拖 PDF / txt / md 到这里，或点击选择（200MB 内）</div>
+    <input id="file" type="file" accept=".pdf,.txt,.md,.csv" hidden />
+    <div class="list" id="docs"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <input id="q" type="text" placeholder="问点什么，例如：差旅报销的标准是多少？" />
+      <button id="ask" onclick="ask()">提问</button>
+    </div>
+    <div class="ans" id="ans"></div>
+    <div class="cite" id="cite"></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const tokenEl = $('#token');
+tokenEl.value = localStorage.getItem('kb_token') || '';
+
+function saveToken(){ localStorage.setItem('kb_token', tokenEl.value.trim()); flash('已记住'); }
+function flash(msg){ const h=$('#health'); h.textContent=msg; setTimeout(checkHealth, 1200); }
+const H = () => ({ 'Authorization': 'Bearer ' + tokenEl.value.trim() });
+
+async function checkHealth(){
+  const h = $('#health');
+  try{
+    const r = await fetch('/api/health');
+    const d = await r.json();
+    const bad = d.db !== 'ok' || d.embed !== 'configured';
+    h.textContent = `db:${d.db} · embed:${d.embed}`;
+    h.className = 'tag ' + (bad ? 'bad' : 'ok');
+  }catch(e){ h.textContent = '服务未启动'; h.className='tag bad'; }
+}
+
+const drop = $('#drop'), fileEl = $('#file');
+drop.onclick = () => fileEl.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); upload(e.dataTransfer.files[0]); };
+fileEl.onchange = () => upload(fileEl.files[0]);
+
+async function upload(f){
+  if(!f) return;
+  drop.textContent = `上传中：${f.name} …`;
+  const fd = new FormData(); fd.append('file', f);
+  try{
+    const r = await fetch('/api/ingest/file', {method:'POST', headers:H(), body:fd});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail?.message || JSON.stringify(d));
+    drop.textContent = d.deduped ? '内容重复，已复用文档' : '已入队，处理中…';
+    poll(d.doc_id);
+  }catch(e){ drop.textContent = '失败：' + e.message; }
+}
+
+async function poll(id){
+  for(let i=0;i<120;i++){
+    await new Promise(r=>setTimeout(r,1500));
+    const r = await fetch('/api/documents/'+id, {headers:H()});
+    const d = await r.json();
+    drop.textContent = `${d.title} · ${d.status} · ${d.chunk_count||0} 片`;
+    if(d.status==='ready' || d.status==='failed'){ loadDocs(); if(d.status==='failed') drop.textContent += ' · ' + (d.error_msg||''); return; }
+  }
+}
+
+async function loadDocs(){
+  try{
+    const r = await fetch('/api/documents', {headers:H()});
+    const d = await r.json();
+    $('#docs').innerHTML = (d.items||[]).slice(0,6).map(x =>
+      `<div><span>${x.title}</span><span>${x.status} · ${x.chunk_count} 片</span></div>`).join('');
+  }catch(e){}
+}
+
+async function ask(){
+  const q = $('#q').value.trim(); if(!q) return;
+  $('#ans').textContent = ''; $('#cite').innerHTML = ''; $('#ask').disabled = true;
+  try{
+    const r = await fetch('/api/query', {
+      method:'POST', headers:{...H(), 'Content-Type':'application/json'},
+      body: JSON.stringify({question:q})
+    });
+    if(!r.ok){ throw new Error(await r.text()); }
+    const reader = r.body.getReader(); const dec = new TextDecoder();
+    let buf = '', text = '';
+    while(true){
+      const {value, done} = await reader.read(); if(done) break;
+      buf += dec.decode(value, {stream:true});
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for(const p of parts){
+        const ev = (p.match(/^event: (.+)$/m)||[])[1];
+        const data = (p.match(/^data: ([\s\S]+)$/m)||[])[1];
+        if(!ev || !data) continue;
+        if(ev==='token'){ text += JSON.parse(data).delta || ''; $('#ans').textContent = text; }
+        else if(ev==='citations'){ render(JSON.parse(data)); }
+        else if(ev==='error'){ $('#ans').textContent = text + '\n\n[出错] ' + JSON.parse(data).message; }
+      }
+    }
+  }catch(e){ $('#ans').textContent = '请求失败：' + e.message; }
+  finally{ $('#ask').disabled = false; }
+}
+
+function render(list){
+  if(!list || !list.length){ $('#cite').textContent = '（没有引用）'; return; }
+  $('#cite').innerHTML = list.map(c =>
+    `<div style="margin-bottom:6px">[${c.index}] <b>${c.title}</b> ${c.locator_text} · 分数 ${c.score}</div>`).join('');
+}
+
+checkHealth(); tokenEl.value && loadDocs();
+</script>
+</body>
+</html>
