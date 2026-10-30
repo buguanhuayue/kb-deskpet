@@ -42,6 +42,8 @@ else
   mv "$TMP/repo" "$WORK"
 fi
 cd "$WORK"
+# 清掉 macOS 打包带来的 AppleDouble 影子文件
+find "$WORK" -name "._*" -type f -delete 2>/dev/null || true
 
 echo "== 3/6 写入 .env =="
 if [[ -f "$TMP/env.production" ]]; then
@@ -57,7 +59,7 @@ echo "== 4/6 起服务 =="
 docker compose up -d --build
 echo "   等待 postgres 就绪"
 for _ in $(seq 1 40); do
-  docker compose exec -T postgres pg_isready -U kb -d kb >/dev/null 2>&1 && break
+  docker compose exec -T postgres pg_isready -U kb -d kb >/dev/null 2>&1 </dev/null && break
   sleep 2
 done
 
@@ -66,11 +68,15 @@ if [[ -f "$TMP/kb.dump" ]]; then
   docker compose exec -T postgres pg_restore -U kb -d kb --clean --if-exists < "$TMP/kb.dump" || true
   echo "   已从 kb.dump 恢复"
 else
-  docker compose exec -T api python scripts/migrate.py
+  if ! docker compose exec -T api python scripts/migrate.py </dev/null; then
+    echo "-- 迁移失败，api 日志如下 --" >&2
+    docker compose logs api --tail 40 >&2 || true
+    exit 1
+  fi
 fi
 
 echo "== 6/6 自检 =="
-docker compose exec -T api python scripts/check_keys.py || true
+docker compose exec -T api python scripts/check_keys.py </dev/null || true
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo

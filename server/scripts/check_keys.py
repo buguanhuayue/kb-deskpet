@@ -99,8 +99,10 @@ def llm_check() -> str:
 
 def probe_agnes_embeddings() -> str:
     """Agnes 是否顺手提供 embeddings —— 通了就能一个 key 全包。"""
-    if settings.embed_enabled or not settings.llm_api_key:
+    if settings.embed_enabled:
         return "跳过（EMBED_API_KEY 已配置，无需共用）"
+    if not settings.llm_api_key:
+        return "跳过（LLM_API_KEY 也为空，两个 key 都没填，无法探测）"
     tried = []
     for model in (settings.embed_model, "text-embedding-3-small", "bge-m3", "embedding-3"):
         try:

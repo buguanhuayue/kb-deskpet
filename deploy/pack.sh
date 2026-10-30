@@ -7,6 +7,10 @@
 # 不含：.venv / server/data / dist / 上传的原始文件。
 set -euo pipefail
 
+# macOS 的 tar 会给带扩展属性的文件塞 ._xxx 影子文件（AppleDouble），
+# 到 Linux 上会被当成真的 .sql 读，直接报 UnicodeDecodeError。
+export COPYFILE_DISABLE=1
+
 REPO="$(git rev-parse --show-toplevel)"
 cd "$REPO"
 
@@ -26,6 +30,7 @@ tar -czf "$STAGE/code.tgz" \
   --exclude=.env \
   --exclude=.DS_Store \
   --exclude='*.pyc' \
+  --exclude='._*' \
   --exclude=__pycache__ \
   -C "$REPO" .
 
