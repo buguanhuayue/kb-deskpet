@@ -3,6 +3,7 @@
 阶段：parsing → chunking → embedding → ready；任一步失败写 error 并置 failed。
 状态写进 documents.status，前端直接轮询这个字段即可画进度。
 """
+import json
 import logging
 import time
 from pathlib import Path
@@ -23,6 +24,39 @@ def _set_status(conn, doc_id: str, status: str, **fields) -> None:
     sets = ", ".join(f"{k} = %s" for k in fields)
     sql = f"UPDATE documents SET status = %s{', ' + sets if sets else ''} WHERE id = %s"
     conn.execute(sql, (status, *fields.values(), doc_id))
+
+
+def _write_chunks(doc_id: str, batch, vecs: list[list[float]] | None) -> None:
+    """写一批切片。vecs=None 表示无向量模式（关键词可检索，向量路跳过）。"""
+    with tx() as conn:
+        _set_status(conn, doc_id, "embedding" if vecs is not None else "chunking")
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO chunks (doc_id, dept_id, seq, text, locator, token_count,
+                                    embedding, embed_model, tsv)
+                SELECT %(doc_id)s, d.dept_id, %(seq)s, %(text)s, %(locator)s::jsonb,
+                       %(tok)s, %(emb)s::vector, %(model)s,
+                       to_tsvector('simple', %(tsvtext)s)
+                FROM documents d WHERE d.id = %(doc_id)s
+                ON CONFLICT (doc_id, seq) DO UPDATE
+                  SET text = EXCLUDED.text, embedding = EXCLUDED.embedding,
+                      tsv = EXCLUDED.tsv, embed_model = EXCLUDED.embed_model
+                """,
+                [
+                    {
+                        "doc_id": doc_id,
+                        "seq": c.seq,
+                        "text": c.text,
+                        "locator": json.dumps(c.locator),
+                        "tok": c.token_count,
+                        "emb": vec_literal(v) if vecs is not None else None,
+                        "model": settings.embed_model if vecs is not None else "none",
+                        "tsvtext": to_tsv_text(c.text),
+                    }
+                    for c, v in (zip(batch, vecs) if vecs is not None else ((c, None) for c in batch))
+                ],
+            )
 
 
 def ingest_document(doc_id: str) -> None:
@@ -57,46 +91,31 @@ def ingest_document(doc_id: str) -> None:
         conn.execute("DELETE FROM chunks WHERE doc_id = %s", (doc_id,))
         conn.execute(
             "UPDATE documents SET ext = ext || %s::jsonb WHERE id = %s",
-            (__import__("json").dumps(meta), doc_id),
+            (json.dumps(meta), doc_id),
         )
 
-    # 向量化：分批，失败整体回滚到 failed，可重试
+    # 向量化：分批写入。embedding 不可用时按 EMBED_REQUIRED 决定：
+    #   true （默认）→ 整篇置 failed，宁可失败也不留不可检索的数据
+    #   false        → 清掉半成品，整篇按无向量重写，仅关键词可检索
     total = len(chunks)
-    written = 0
-    for i in range(0, total, EMBED_BATCH):
-        batch = chunks[i : i + EMBED_BATCH]
-        vecs = embed_texts([embed_input(doc["title"], c.text) for c in batch])
+    try:
+        for i in range(0, total, EMBED_BATCH):
+            batch = chunks[i : i + EMBED_BATCH]
+            vecs = embed_texts([embed_input(doc["title"], c.text) for c in batch])
+            _write_chunks(doc_id, batch, vecs)
+            log.info("doc %s 向量化 %s/%s", doc_id, min(i + EMBED_BATCH, total), total)
+    except Exception as e:
+        if settings.embed_required:
+            raise
+        log.warning("doc %s 向量化失败，降级为无向量入库（仅关键词可检索）: %s", doc_id, e)
         with tx() as conn:
-            _set_status(conn, doc_id, "embedding")
-            with conn.cursor() as cur:
-                cur.executemany(
-                    """
-                    INSERT INTO chunks (doc_id, dept_id, seq, text, locator, token_count,
-                                        embedding, embed_model, tsv)
-                    SELECT %(doc_id)s, d.dept_id, %(seq)s, %(text)s, %(locator)s::jsonb,
-                           %(tok)s, %(emb)s::vector, %(model)s,
-                           to_tsvector('simple', %(tsvtext)s)
-                    FROM documents d WHERE d.id = %(doc_id)s
-                    ON CONFLICT (doc_id, seq) DO UPDATE
-                      SET text = EXCLUDED.text, embedding = EXCLUDED.embedding,
-                          tsv = EXCLUDED.tsv, embed_model = EXCLUDED.embed_model
-                    """,
-                    [
-                        {
-                            "doc_id": doc_id,
-                            "seq": c.seq,
-                            "text": c.text,
-                            "locator": __import__("json").dumps(c.locator),
-                            "tok": c.token_count,
-                            "emb": vec_literal(v),
-                            "model": f"{settings.embed_model}",
-                            "tsvtext": to_tsv_text(c.text),
-                        }
-                        for c, v in zip(batch, vecs)
-                    ],
-                )
-        written += len(batch)
-        log.info("doc %s 向量化 %s/%s", doc_id, written, total)
+            conn.execute("DELETE FROM chunks WHERE doc_id = %s", (doc_id,))
+        _write_chunks(doc_id, chunks, None)
+        with tx() as conn:
+            conn.execute(
+                "UPDATE documents SET ext = ext || %s::jsonb WHERE id = %s",
+                (json.dumps({"embed_degraded": True, "embed_error": str(e)[:300]}), doc_id),
+            )
 
     with tx() as conn:
         _set_status(conn, doc_id, "ready", chunk_count=total, published_at=None)

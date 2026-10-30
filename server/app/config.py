@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     embed_model: str = "BAAI/bge-m3"
     embed_api_key: str = ""
     embed_dim: int = 1024
+    # 向量化不可用（余额不足 / 服务挂了）时怎么办：
+    #   true （默认）→ 整篇置 failed，宁可失败也不写不可检索的数据
+    #   false        → 落 embedding=NULL、embed_model='none'，仅关键词可检索
+    embed_required: bool = True
 
     # 重排
     rerank_base: str = "https://api.siliconflow.cn/v1"
@@ -34,7 +38,7 @@ class Settings(BaseSettings):
     storage_dir: str = "/data/files"
     max_upload_mb: int = 200
 
-    app_port: int = 8088
+    app_port: int = 9527
     log_level: str = "INFO"
 
     @property

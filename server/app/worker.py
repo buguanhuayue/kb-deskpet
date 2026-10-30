@@ -23,7 +23,9 @@ def run_once() -> bool:
     with get_conn() as conn:
         job = conn.execute("SELECT * FROM claim_job()").fetchone()
         conn.commit()
-    if not job:
+    # 0002 迁移后队列为空返回 0 行；这里再兜一层 id 判空，
+    # 防止旧函数（复合类型）返回「一行全 NULL」时把 'None' 当 doc_id。
+    if not job or job["id"] is None:
         return False
 
     doc_id = str(job["doc_id"])

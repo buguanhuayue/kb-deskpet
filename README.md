@@ -15,7 +15,7 @@ cp .env.example .env
 make up        # postgres + api + worker
 make check     # M0 闸门：不回全绿就别往下走
 make seed      # 打印 token，贴到验收台
-open http://localhost:8088
+open http://localhost:9527
 ```
 
 ## 现在支持什么

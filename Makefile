@@ -10,7 +10,11 @@ help:
 
 up:
 	docker compose up -d --build
-	@echo "验收台: http://localhost:8088"
+	@echo "验收台: http://localhost:$${APP_PORT:-8088}"
+
+sync:
+	@rsync -a --exclude='.git' --exclude='.env' --exclude='.venv' --exclude='server/data' --exclude='dist' ./ kbvm:~/kb-deskpet/
+	@echo "已同步到 kbvm（.env 不动）；改 Python 需 docker compose up -d --build api worker"
 
 down:
 	docker compose down

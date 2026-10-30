@@ -79,8 +79,10 @@ echo "== 6/6 自检 =="
 docker compose exec -T api python scripts/check_keys.py </dev/null || true
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+PORT="$(grep -E '^APP_PORT=' .env 2>/dev/null | cut -d= -f2)"
+PORT="${PORT:-8088}"
 echo
-echo "完成。验收台： http://${IP:-localhost}:8088"
-echo "对外访问前请放行 8088，或套 Nginx + HTTPS。"
+echo "完成。验收台： http://${IP:-localhost}:${PORT}"
+echo "对外访问前请放行 ${PORT}，或套 Nginx + HTTPS。"
 echo "首个账号： docker compose exec api python scripts/seed.py"
 rm -rf "$TMP"
