@@ -43,7 +43,10 @@ def db_check() -> str:
 
 def embed_check() -> str:
     if not settings.embed_enabled:
-        raise RuntimeError("EMBED_API_KEY 为空（去 siliconflow.cn 建一个，模型选 BAAI/bge-m3）")
+        raise RuntimeError(
+            "EMBED_API_KEY 为空。要么起本地 embed 容器（EMBED_BASE=http://embed:8088/v1, "
+            "EMBED_API_KEY=local），要么填云端 key（模型选 BAAI/bge-m3）"
+        )
     r = httpx.post(
         f"{settings.embed_base.rstrip('/')}/embeddings",
         headers={"Authorization": f"Bearer {settings.embed_api_key}"},

@@ -31,6 +31,29 @@ services:
     ports:
       - "${APP_PORT:-8088}:8088"
 
+  # 本地向量化 / 重排（OpenAI 兼容）。不装则删掉本服务并把 EMBED_BASE 指回云端，
+  # 两边模型同为 BAAI/bge-m3，1024 维，向量可以互换。
+  embed:
+    restart: unless-stopped
+    build:
+      context: ./server
+      dockerfile: Dockerfile.embed
+    environment:
+      EMBED_MODEL: ${EMBED_MODEL:-jinaai/jina-embeddings-v3}
+      RERANK_MODEL: ${LOCAL_RERANK_MODEL:-jinaai/jina-reranker-v2-base-multilingual}
+      # hf-mirror 下 xet/CAS 会 401，关掉走普通 HTTP 下载
+      HF_HUB_DISABLE_XET: "1"
+    volumes:
+      - models:/models
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8088/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 300s          # 首次要下 2GB 权重，给足时间
+    ports:
+      - "127.0.0.1:8090:8088"     # 只给本机调试，不对外
+
   worker:
     restart: unless-stopped
     build: ./server
@@ -45,3 +68,4 @@ services:
 volumes:
   pgdata:
   filedata:
+  models:
