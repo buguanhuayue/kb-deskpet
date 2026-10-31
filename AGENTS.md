@@ -9,7 +9,8 @@
 | API | FastAPI + psycopg3（手写 SQL，无 ORM） | SQLAlchemy ORM / Django |
 | 库 | PostgreSQL 16 + pgvector + tsvector | Milvus / Qdrant / ES（P2 之前不谈） |
 | 队列 | `jobs` 表 + `FOR UPDATE SKIP LOCKED` | Redis / Celery / RabbitMQ |
-| 向量化 | API（硅基流动 bge-m3，1024 维） | 本地模型（用户明确要求走 key） |
+| 向量化 | 本地 `embed` 容器：jina-embeddings-v3（1024 维） | 云端 API（曾用硅基流动，余额耗尽即停摆） |
+| 重排 | 本地 `embed` 容器：jina-reranker-v2-base-multilingual | 云端 rerank（失败必须可降级，见铁律 5） |
 | 生成 | Agnes `agnes-3.0-flash`（OpenAI 兼容） | 自建推理 |
 | 前端 | P0 单页验收台；P1 再上 React | 现在就上 Tauri |
 
@@ -29,7 +30,11 @@
 PostgreSQL 的 `simple` 分词配置对中文无效。本项目做法：
 
 - 入库：`to_tsvector('simple', jieba切好并用空格连接的文本)`
-- 查询：`plainto_tsquery('simple', jieba切好并去停用词的文本)`
+- 查询：`to_tsquery('simple', jieba切好去停用词、再用 ' | ' 连接的文本)`
+
+**查询必须是 OR 连接，不是 AND。** `plainto_tsquery` 默认"所有词都要命中"，
+中文一句切五六个词，缺一个就整条检索归零——这个坑已经踩过（见缺陷 D-01）。
+OR 之后由 `ts_rank_cd` 按命中数量排序，多命中的自然排前。
 
 两处必须都走 `app/search/tokenize.py`。只改一边 = 检索直接归零，且不会报错，极难发现。
 
