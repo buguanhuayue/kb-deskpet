@@ -75,8 +75,17 @@ else
   fi
 fi
 
-echo "== 6/6 自检 =="
+echo "== 6/7 自检 =="
 docker compose exec -T api python scripts/check_keys.py </dev/null || true
+
+echo "== 7/7 开机自启 =="
+# 容器已有 restart: unless-stopped，但守护进程本身不自启的话，机器重启后仍然全灭。
+# 这是最容易漏、后果最严重的一步（曾导致同类项目静默停摆 48 小时）。
+if command -v systemctl >/dev/null 2>&1; then
+  sudo systemctl enable docker >/dev/null 2>&1 && echo "   docker 已设为开机自启" \
+    || echo "   !! 未能设置开机自启，请手工执行: sudo systemctl enable docker"
+  echo "   当前状态: $(systemctl is-enabled docker 2>/dev/null || echo unknown)"
+fi
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 PORT="$(grep -E '^APP_PORT=' .env 2>/dev/null | cut -d= -f2)"
