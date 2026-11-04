@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' *; img-src 'self' data: blob: *; connect-src *" />
+<title>知识小助</title>
+<link rel="stylesheet" href="css/pet.css" />
+</head>
+<body data-state="idle">
+  <div id="bubble" class="bubble hidden"><span id="bubbleText">0/0</span></div>
+
+  <div id="pet" class="pet" title="拖文件给我，或点我提问">
+    <!-- pet-anim 负责状态动画，外层 .pet 留给点击挤压 / 拖动倾斜，互不打架 -->
+    <div id="petAnim" class="pet-anim">
+      <!-- 两层底图交叉淡入，换状态时不会闪 -->
+      <img id="petA" class="pet-img on" src="/assets/pet/rig/idle-base2.png" alt="" draggable="false" />
+      <img id="petB" class="pet-img" src="/assets/pet/rig/idle-base2.png" alt="" draggable="false" />
+      <!-- 眼睛独立图层，用于眨眼（底图上对应的位置已填平） -->
+      <!-- 肢体独立图层：头顶的书 / 右手卷轴，底图上已挖空，用来做摆动 -->
+      <img id="petBook" class="pet-part" alt="" draggable="false" />
+      <img id="petScroll" class="pet-part" alt="" draggable="false" />
+      <img id="eyeL" class="pet-eye" alt="" draggable="false" />
+      <img id="eyeR" class="pet-eye" alt="" draggable="false" />
+    </div>
+  </div>
+
+  <div id="dropHint" class="drop-hint hidden">松手就入库</div>
+  <script src="/js/tauri-bridge.js"></script>
+  <script src="/js/pet.js"></script>
+</body>
+</html>

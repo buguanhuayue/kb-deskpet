@@ -1,9 +1,31 @@
+# Environment and virtual env
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 *.pyc
+
+# Data and logs
 data/
 files/
-.DS_Store
 *.log
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Build outputs
 dist/
+build/
+*.dmg
+*.exe
+*.zip
+*.blockmap
+
+# Tauri / Rust / Frontend build artifacts
+node_modules/
+**/node_modules/
+target/
+**/target/
+tauri-app/dist/

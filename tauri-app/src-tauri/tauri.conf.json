@@ -1,0 +1,51 @@
+{
+  "productName": "知识小助",
+  "version": "0.8.6",
+  "identifier": "com.company.deskpet",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "pet",
+        "title": "知识小助",
+        "url": "pet.html",
+        "width": 200,
+        "height": 200,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "skipTaskbar": true,
+        "shadow": false
+      },
+      {
+        "label": "panel",
+        "title": "知识小助 · 问答面板",
+        "url": "panel.html",
+        "width": 760,
+        "height": 720,
+        "minWidth": 480,
+        "minHeight": 520,
+        "decorations": false,
+        "resizable": true,
+        "visible": false,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+  },
+  "plugins": {}
+}

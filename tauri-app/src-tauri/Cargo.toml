@@ -1,0 +1,18 @@
+[package]
+name = "kb-deskpet-tauri"
+version = "0.1.0"
+description = "kb-deskpet desktop wrapper"
+authors = ["kb-deskpet"]
+edition = "2021"
+repository = ""
+default-run = "kb-deskpet-tauri"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-http = "2"
+tauri-plugin-store = "2"

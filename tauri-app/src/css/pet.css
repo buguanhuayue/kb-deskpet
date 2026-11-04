@@ -1,0 +1,245 @@
+/* 桌宠外观：角色图 + 眼睛独立图层 + 分层动效
+   结构：.pet（外层，承接点击挤压/拖动倾斜）> .pet-anim（状态动画）> 底图 / 眼睛
+   配色跟着形象走（华夏红 + 深蓝）。 */
+
+:root {
+  --brand-red: #c8332f;
+  --brand-navy: #1b2a4a;
+  --ink: #1b2a4a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  width: 200px;
+  height: 200px;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+/* 外层：只做「被操作」的反馈，不跑状态动画，避免两处 transform 打架 */
+.pet {
+  position: relative;
+  width: 200px;
+  height: 200px;
+  perspective: 800px;
+  transform-origin: 50% 96%;
+  transition: transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1);
+  will-change: transform;
+  background: transparent;
+}
+
+/* 内层：跑状态动画 */
+.pet-anim {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 96%;
+  animation: breathe 3.9s ease-in-out infinite;
+  will-change: transform;
+}
+
+.pet-img,
+.pet-eye {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+.pet-img {
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.pet-img.on { opacity: 1; }
+
+/* 眼睛图层：默认压在底图上；换姿势时淡出，看起来像顺势眨了一下 */
+.pet-eye {
+  opacity: 0;
+  transition: opacity 0.12s linear;
+  will-change: transform;
+  /* 青色眼睛自带一点光晕，呼吸时亮暗变化，像有神 */
+  animation: eye-glow 3.4s ease-in-out infinite;
+}
+.pet-eye.on { opacity: 1; }
+
+@keyframes eye-glow {
+  0%, 100% { filter: drop-shadow(0 0 1px rgba(110, 220, 255, 0.55)); }
+  50%      { filter: drop-shadow(0 0 3px rgba(130, 235, 255, 0.9)); }
+}
+
+/* 肢体图层：头顶的书 / 右手卷轴。底图上已挖空，这里叠回去并各自摆动。
+   支点由 JS 按 rig-parts 算出的坐标写入 transform-origin，所以只写角度就行。 */
+.pet-part {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  -webkit-user-drag: none;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  will-change: transform;
+}
+.pet-part.on { opacity: 1; }
+
+/* 书：小幅左右摇 + 纵向轻微张合（书页在自己扇动） */
+#petBook.on { animation: book-sway 3.7s ease-in-out infinite; }
+@keyframes book-sway {
+  0%   { transform: rotate(-1.5deg) scaleY(1); }
+  25%  { transform: rotate(-0.5deg) scaleY(0.988); }
+  50%  { transform: rotate(1.3deg) scaleY(1.004); }
+  75%  { transform: rotate(0.4deg) scaleY(0.99); }
+  100% { transform: rotate(-1.5deg) scaleY(1); }
+}
+
+/* 卷轴：绕手腕轻晃，频率比书快一点，两者不同步才自然 */
+#petScroll.on { animation: scroll-sway 2.9s ease-in-out infinite; }
+@keyframes scroll-sway {
+  0%, 100% { transform: rotate(2deg); }
+  33%      { transform: rotate(-1.6deg); }
+  66%      { transform: rotate(0.6deg); }
+}
+
+/* 拖动 / 悬停拖文件时不摆——会被整体位移带得晕 */
+body.dragging .pet-part,
+body.dragover .pet-part { animation: none; }
+
+/* 开心（入库完成）：眼睛挤成弯的，笑得眯起来 */
+body[data-state="party"] .pet-eye {
+  animation: none;
+  transform: scaleY(0.55);
+  transition: transform 0.16s ease;
+}
+
+/* 出错抖动时肢体刚性一点，别跟着抖 */
+body[data-state="alert"] .pet-part { animation: none; }
+
+/* ---------- 状态动画 ---------- */
+
+/* 待机：呼吸（纵向压缩、横向补偿）+ 极轻微左右转，像有体积 */
+@keyframes breathe {
+  0%   { transform: translateY(0)     scale(1, 1)        rotateY(0deg); }
+  35%  { transform: translateY(-1.5px) scale(1.006, 0.992) rotateY(-1.2deg); }
+  70%  { transform: translateY(-3px)  scale(0.996, 1.004) rotateY(1.2deg); }
+  100% { transform: translateY(0)     scale(1, 1)        rotateY(0deg); }
+}
+
+/* 处理中：节奏更快的点头，幅度小 */
+body[data-state="eating"] .pet-anim {
+  animation: work-bob 1.3s ease-in-out infinite;
+}
+@keyframes work-bob {
+  0%, 100% { transform: translateY(0) scale(1, 1); }
+  30%      { transform: translateY(1px) scale(1.008, 0.988); }
+  65%      { transform: translateY(-2px) scale(0.994, 1.006); }
+}
+
+/* 思考：歪头 + 轻微上浮，像在琢磨 */
+body[data-state="thinking"] .pet-anim {
+  animation: think-sway 2.6s ease-in-out infinite;
+}
+@keyframes think-sway {
+  0%, 100% { transform: rotate(0deg) translateY(0); }
+  30%      { transform: rotate(-2.2deg) translateY(-1.5px); }
+  70%      { transform: rotate(2.2deg) translateY(-1.5px); }
+}
+
+/* 出错 / 提醒：快速抖两下 */
+body[data-state="alert"] .pet-anim {
+  animation: alert-shake 0.55s ease-in-out 3;
+}
+@keyframes alert-shake {
+  0%, 100% { transform: translateX(0) rotate(0deg); }
+  20%      { transform: translateX(-3px) rotate(-1.4deg); }
+  50%      { transform: translateX(3px) rotate(1.4deg); }
+  80%      { transform: translateX(-2px) rotate(-0.6deg); }
+}
+
+/* 入库完成：蓄力 → 起跳 → 落地压缩 → 回弹 */
+body[data-state="party"] .pet-anim {
+  animation: party-hop 0.95s cubic-bezier(0.3, 0.9, 0.4, 1) 3;
+}
+@keyframes party-hop {
+  0%   { transform: translateY(0) scale(1, 1); }
+  12%  { transform: translateY(1px) scale(1.03, 0.96); }   /* 蓄力下蹲 */
+  38%  { transform: translateY(-10px) scale(0.975, 1.035); } /* 起跳拉长 */
+  62%  { transform: translateY(0) scale(1.04, 0.955); }     /* 落地压扁 */
+  80%  { transform: translateY(-2px) scale(0.995, 1.008); }
+  100% { transform: translateY(0) scale(1, 1); }
+}
+
+/* 拖文件悬停：凑近一点 */
+body.dragover .pet-anim {
+  animation: none;
+  transform: scale(1.05);
+  transition: transform 0.18s ease;
+}
+
+/* 拖动中：不做周期动画，交给 JS 按速度倾斜 */
+body.dragging .pet-anim { animation: none; }
+
+/* 拖动时外层要跟手，0.16s 的过渡会让倾斜滞后一截 */
+body.dragging .pet {
+  transition: none;
+  cursor: grabbing;
+}
+
+.bubble {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 190px;
+  background: #ffffff;
+  color: var(--ink);
+  border: 1px solid rgba(27, 42, 74, 0.12);
+  border-radius: 12px;
+  padding: 5px 10px;
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 12px rgba(27, 42, 74, 0.14);
+  pointer-events: none;
+  z-index: 5;
+}
+.bubble::after {
+  content: "";
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  margin-left: -5px;
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  border-right: 1px solid rgba(27, 42, 74, 0.12);
+  border-bottom: 1px solid rgba(27, 42, 74, 0.12);
+  transform: rotate(45deg);
+}
+
+.drop-hint {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(200, 51, 47, 0.14);
+  border: 2px dashed rgba(200, 51, 47, 0.75);
+  border-radius: 24px;
+  color: #8c1f1c;
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.hidden { display: none !important; }
