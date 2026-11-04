@@ -1,6 +1,6 @@
 // tauri-bridge.js: 知识小助 Tauri 完整后端协议适配层
 (function() {
-  const FIXED_SERVER_URL = 'http://192.168.1.234:9527';
+  const DEFAULT_SERVER_URL = 'https://knowledge.xinyeonline.com.cn';
   const EMAIL_DOMAIN = 'company.local';
 
   function normalizeAccount(input) {
@@ -28,24 +28,32 @@
   const loadCfg = () => {
     try {
       const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+      let serverUrl = data.serverUrl;
+      if (!serverUrl || serverUrl.includes('192.168.1.234')) {
+        serverUrl = DEFAULT_SERVER_URL;
+      }
       return {
-        serverUrl: FIXED_SERVER_URL,
+        serverUrl,
         email: 'liumingqing@company.local',
         userName: 'liumingqing',
         tenantId: 10009,
         tenantName: "刘明青's Workspace",
         kbId: '2d33c3a6-4618-4c89-952a-3a802a5986ae',
         kbName: '刘明青',
-        ...data
+        ...data,
+        serverUrl
       };
     } catch {
-      return { serverUrl: FIXED_SERVER_URL };
+      return { serverUrl: DEFAULT_SERVER_URL };
     }
   };
 
   const saveCfg = (patch) => {
     const cur = loadCfg();
-    const next = { ...cur, ...patch, serverUrl: FIXED_SERVER_URL };
+    const next = { ...cur, ...patch };
+    if (patch && patch.serverUrl) {
+      next.serverUrl = String(patch.serverUrl).trim().replace(/\/+$/, '');
+    }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     broadcast('cfg_change', next);
     return next;
@@ -91,7 +99,9 @@
   }
 
   function normalizeBase() {
-    return `${FIXED_SERVER_URL}/api/v1`;
+    const cfg = loadCfg();
+    const s = (cfg.serverUrl || DEFAULT_SERVER_URL).replace(/\/+$/, '');
+    return `${s}/api/v1`;
   }
 
   async function apiRequest(path, options = {}) {
@@ -193,7 +203,7 @@
       return {
         ok: true,
         loggedIn: hasLogin,
-        serverUrl: FIXED_SERVER_URL,
+        serverUrl: c.serverUrl || DEFAULT_SERVER_URL,
         token: c.token || '',
         user: c.user || null,
         userName: c.userName || (c.user && (c.user.username || c.user.name)) || 'liumingqing',
@@ -208,10 +218,11 @@
       };
     },
 
-    login: async ({ email, password }) => {
+    login: async ({ serverUrl, email, password }) => {
+      const targetServerUrl = String(serverUrl || loadCfg().serverUrl || DEFAULT_SERVER_URL).trim().replace(/\/+$/, '');
+      saveCfg({ serverUrl: targetServerUrl });
       const account = normalizeAccount(email || 'liumingqing');
       const pass = password || 'hxgs123654';
-      saveCfg({ serverUrl: FIXED_SERVER_URL });
       try {
         const data = await apiRequest('/auth/login', {
           method: 'POST',
@@ -243,6 +254,7 @@
           email: account,
           kbId: pick.id,
           kbName: pick.name,
+          serverUrl: targetServerUrl,
           memberships: data.memberships || []
         });
 
@@ -257,7 +269,7 @@
           kbId: pick.id,
           kbName: pick.name,
           kbs: writableKbs,
-          serverUrl: FIXED_SERVER_URL,
+          serverUrl: targetServerUrl,
           email: account
         };
 
@@ -548,7 +560,7 @@
 
     // 网络自检
     netDiag: async (serverUrl) => {
-      const target = (serverUrl || FIXED_SERVER_URL).replace(/\/+$/, '');
+      const target = (serverUrl || loadCfg().serverUrl || DEFAULT_SERVER_URL).replace(/\/+$/, '');
       const t0 = Date.now();
       try {
         const res = await fetch(`${target}/health`, { signal: AbortSignal.timeout(5000) });
@@ -655,7 +667,7 @@
 
     openWeb: () => {
       const cfg = loadCfg();
-      window.open(cfg.serverUrl || FIXED_SERVER_URL, '_blank');
+      window.open(cfg.serverUrl || DEFAULT_SERVER_URL, '_blank');
     },
 
     openLocalNetworkSettings: () => ({ ok: true }),

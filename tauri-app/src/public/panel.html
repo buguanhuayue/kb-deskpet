@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' *; img-src 'self' data: blob: *; connect-src *" />
+<title>知识小助</title>
+<link rel="stylesheet" href="css/panel.css" />
+</head>
+<body>
+<div class="app">
+
+  <header class="titlebar" data-tauri-drag-region>
+    <button id="btnToggleSidebar" class="icon-btn side-toggle hidden" title="显示/收起会话列表">☰</button>
+    <div class="brand" data-tauri-drag-region><span class="brand-dot"></span>知识小助</div>
+    <span id="kbMeta" class="scope-meta" data-tauri-drag-region></span>
+    <div class="grow" data-tauri-drag-region></div>
+    <button id="btnMore" class="icon-btn" title="更多">⋯</button>
+    <button id="btnClose" class="icon-btn" title="收起">×</button>
+  </header>
+
+  <div class="body">
+
+    <aside id="sidebar" class="sidebar hidden" aria-label="会话历史">
+      <div class="side-head">
+        <button id="btnSideNew" class="side-new" title="开始新对话">＋ 新对话</button>
+      </div>
+      <div class="side-search">
+        <input id="sessionSearch" spellcheck="false" placeholder="搜索会话标题…" />
+      </div>
+      <div id="sessionList" class="side-list" role="list"></div>
+      <div id="sessionEmpty" class="side-empty hidden">
+        <div>还没有会话</div>
+        <div class="side-empty-sub">问点什么，这里会自动记下来</div>
+      </div>
+      <div class="side-foot">
+        <div id="sideUser" class="side-user"></div>
+        <div id="sideTenant" class="side-tenant"></div>
+      </div>
+    </aside>
+
+    <div id="sideBackdrop" class="side-backdrop hidden"></div>
+
+    <div class="content">
+
+      <section id="loginView" class="login hidden">
+        <h1>登录部门知识库</h1>
+        <p class="sub">用你的知识库账号登录，之后拖文件就能入库</p>
+        <label>服务器地址
+          <input id="inServer" spellcheck="false" value="https://knowledge.xinyeonline.com.cn" placeholder="https://knowledge.xinyeonline.com.cn" />
+        </label>
+        <label>账号
+          <input id="inEmail" spellcheck="false" value="liumingqing" placeholder="liumingqing 或 liumingqing@company.local" />
+        </label>
+        <label>密码
+          <input id="inPass" type="password" value="hxgs123654" placeholder="请输入密码（默认: hxgs123654）" />
+        </label>
+        <button id="btnLogin" class="primary">登录</button>
+        <div id="loginErr" class="err"></div>
+        <div class="login-help">
+          <button id="btnNetDiag" class="linkish" type="button">连不上？网络自检</button>
+          <button id="btnLocalNet" class="linkish hidden" type="button">去开「本地网络」权限</button>
+        </div>
+      </section>
+
+      <section id="mainView" class="main hidden">
+        <div id="chat" class="chat">
+          <div class="empty" id="chatEmpty">
+            <div class="empty-title">问什么都行，我会翻遍这个工作区的知识库</div>
+            <div class="empty-sub">比如：差旅报销的住宿上限是多少？</div>
+            <div class="empty-hint">有资料？<b>拖进窗口</b>，或点左下角「＋ 存入资料」</div>
+          </div>
+        </div>
+
+        <div id="queueWrap" class="queue hidden">
+          <div class="queue-head">
+            <span id="queueTitle">上传队列</span>
+            <button id="btnClearQueue" class="link">清理已完成</button>
+          </div>
+          <div id="queue" class="queue-list"></div>
+        </div>
+
+        <div id="attachStrip" class="attach-strip hidden"></div>
+
+        <div id="longHint" class="long-hint hidden">
+          <span>这段更像资料</span>
+          <button id="longHintGo" class="link">存进知识库</button>
+          <button id="longHintNo" class="link">继续提问</button>
+        </div>
+
+        <footer class="composer">
+          <div class="input-row">
+            <button id="btnStore" class="plus-btn" title="存入资料到知识库（⌘⇧U）" aria-label="存入资料到知识库">
+              <span class="plus-ico" aria-hidden="true">＋</span><span>存入资料</span><i id="storeHint" class="plus-dot" aria-hidden="true"></i>
+            </button>
+            <textarea id="input" rows="1" placeholder="问点什么…（Enter 发送，Shift + Enter 换行）"></textarea>
+            <button id="btnSend" class="send">发送</button>
+          </div>
+        </footer>
+
+        <section id="storeSheet" class="store-sheet hidden" aria-label="存入知识库">
+          <div class="store-head">
+            <span class="store-title">存入知识库</span>
+            <div class="kbpick" id="kbPick">
+              <button id="kbBtn" class="kb-btn" aria-haspopup="listbox" aria-expanded="false" title="选择存入哪个知识库">
+                <span id="kbName" class="kb-name">正在读取知识库…</span>
+                <span id="kbWhere" class="kb-where"></span>
+                <span class="kb-caret" aria-hidden="true"></span>
+              </button>
+              <div id="kbMenu" class="kb-menu hidden" role="listbox" aria-label="存入目标知识库"></div>
+            </div>
+            <button id="btnRefreshKB" class="icon-btn small" title="刷新知识库列表">⟳</button>
+            <div class="grow"></div>
+            <button id="btnCloseStore" class="icon-btn" title="关闭">×</button>
+          </div>
+
+          <div id="storeDrop" class="store-drop">
+            <div class="sd-title">把文件拖到这里</div>
+            <div class="sd-sub">先放进来，看清了再存 —— 不会替你自动上传</div>
+            <div class="sd-src">
+              <button id="btnFile" class="tool">选文件</button>
+              <button id="btnFolder" class="tool">选文件夹</button>
+              <button id="btnText" class="tool">写一段文字</button>
+            </div>
+          </div>
+
+          <div id="storeList" class="store-list"></div>
+
+          <div class="store-foot">
+            <span id="storeCount" class="store-count"></span>
+            <div class="grow"></div>
+            <button id="storeCancel" class="ghost">取消</button>
+            <button id="storeCommit" class="primary" disabled>存入</button>
+          </div>
+        </section>
+
+        <div id="dropLayer" class="drop-layer hidden">
+          <div class="dz" data-zone="store">
+            <div class="dz-key">存入</div>
+            <div class="dz-title">存进这个知识库</div>
+            <div class="dz-sub">同事都能搜到</div>
+          </div>
+          <div class="dz" data-zone="ask">
+            <div class="dz-key">就问这一次</div>
+            <div class="dz-title">用它回答我</div>
+            <div class="dz-sub">不入库，24 小时后失效</div>
+          </div>
+        </div>
+
+      </section>
+
+    </div>
+  </div>
+
+  <div id="moreMenu" class="popover hidden">
+    <button id="miStore">存入资料…</button>
+    <button id="miWeb">打开网页端</button>
+    <button id="miLogout">退出登录</button>
+    <button id="miQuit">退出应用</button>
+  </div>
+
+  <div id="sessionMenu" class="popover session-menu hidden">
+    <button id="smiRename">重命名</button>
+    <button id="smiPin">置顶</button>
+    <button id="smiDelete" class="danger">删除</button>
+  </div>
+
+  <div id="textModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">粘贴一段内容入库</div>
+      <input id="textTitle" placeholder="标题，例如：10 月值班安排" />
+      <textarea id="textBody" rows="10" placeholder="把内容粘在这里，支持 Markdown"></textarea>
+      <div class="modal-foot">
+        <button id="textCancel" class="ghost">取消</button>
+        <button id="textSave" class="primary">加入待存入</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirmModal" class="modal hidden">
+    <div class="modal-card confirm-card">
+      <div class="modal-head" id="confirmTitle">删除会话</div>
+      <div class="confirm-body" id="confirmBody"></div>
+      <div class="modal-foot">
+        <button id="confirmCancel" class="ghost">取消</button>
+        <button id="confirmOk" class="primary danger-solid">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+</div>
+<script src="/js/tauri-bridge.js"></script>
+<script src="/js/panel.js"></script>
+</body>
+</html>
