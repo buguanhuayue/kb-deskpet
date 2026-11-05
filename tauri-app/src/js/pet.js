@@ -192,49 +192,47 @@ function squish(on) {
   petEl.style.transform = on ? 'scale(1.07, 0.92)' : ''
 }
 
-let lastClientX = 0
+let lastScreenX = 0
+let lastScreenY = 0
 let tilt = 0
 
 petEl.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return
-  // 用 clientX/Y 判位移，不用 screenX：窗口是跟着光标走的，
-  // 屏幕坐标基本不动，客户端坐标才反映“手在往哪走”
   press = { x: e.clientX, y: e.clientY }
+  lastScreenX = e.screenX
+  lastScreenY = e.screenY
   dragging = false
   squish(true)
-  // 指针捕获：窗口跟着光标走的时候，光标难免会滑出窗口边界，
-  // 没有捕获就会丢掉后续事件，拖动半路“卡住”
   try { petEl.setPointerCapture(e.pointerId) } catch (_) {}
 })
 
 window.addEventListener('pointermove', (e) => {
   if (!press) return
-  if (!dragging && (Math.abs(e.clientX - press.x) > 2 || Math.abs(e.clientY - press.y) > 2)) {
+  const dist = Math.hypot(e.clientX - press.x, e.clientY - press.y)
+  if (!dragging && dist > 4) {
     dragging = true
     document.body.classList.add('dragging')
-    lastClientX = e.clientX
     petEl.style.transform = ''
-    // 关键：把「窗口位置 + 光标位置」的起点交给主进程，
-    // 之后每次移动由主进程按光标位移设置窗口坐标。
-    // 少了这一步，主进程的 dragState 是 null，窗口一步都不会动。
     if (window.pet.dragStart) window.pet.dragStart()
   }
   if (!dragging) return
 
-  // 按横向速度倾斜，松手回正：拖动时身体会“甩”起来。
-  // movementX 是原始鼠标位移，窗口跟随不会把它吃掉；拿不到时退回客户端坐标差。
-  const dx = e.movementX || e.clientX - lastClientX
-  lastClientX = e.clientX
+  const dx = e.screenX - lastScreenX
+  const dy = e.screenY - lastScreenY
+  lastScreenX = e.screenX
+  lastScreenY = e.screenY
+
   tilt = Math.max(-8, Math.min(8, tilt * 0.55 + dx * 1.1))
   petEl.style.transform = `rotate(${tilt}deg)`
-  window.pet.dragMove()
+  if (dx !== 0 || dy !== 0) {
+    window.pet.dragMove(dx, dy)
+  }
 })
 
 function endPress() {
   if (!press) return
   if (dragging) {
     document.body.classList.remove('dragging')
-    // 回正时带一点回弹
     tilt = 0
     petEl.style.transform = 'rotate(0deg)'
     window.pet.dragEnd()
@@ -247,9 +245,14 @@ function endPress() {
 }
 
 window.addEventListener('pointerup', endPress)
-// 系统打断（比如切 Space、来电）也要收尾，否则窗口会一直跟着光标跑
 window.addEventListener('pointercancel', endPress)
 window.addEventListener('blur', endPress)
+
+petEl.addEventListener('click', () => {
+  if (!dragging) {
+    window.pet.showPanel()
+  }
+})
 
 window.addEventListener('contextmenu', (e) => {
   e.preventDefault()

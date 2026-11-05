@@ -638,9 +638,13 @@
     showPanel: () => invoke('show_panel'),
     hidePanel: () => invoke('hide_panel'),
     togglePanel: () => invoke('toggle_panel'),
-    dragStart: () => invoke('start_dragging', { window_label: 'pet' }),
+    dragStart: () => {},
     dragPanel: () => invoke('start_dragging', { window_label: 'panel' }),
-    dragMove: () => {},
+    dragMove: (dx, dy) => {
+      if (dx || dy) {
+        invoke('move_window', { window_label: 'pet', dx: Math.round(dx || 0), dy: Math.round(dy || 0) });
+      }
+    },
     dragEnd: () => {},
     petMenu: () => invoke('toggle_panel'),
     quit: () => invoke('app_quit'),
