@@ -96,6 +96,18 @@ npm run tauri build
 
 发版流程：改 `package.json` + `tauri.conf.json` 的版本号 → commit → `git tag vX.Y.Z` → push 标签。
 
+### CI 里几个不好踩的坑
+
+| 坑 | 现象 | 现在怎么处理 |
+|---|---|---|
+| macOS 只打包 dmg | release 里没有 `.app.tar.gz`，客户端永远收不到更新 | macOS job 传 `--bundles app,dmg`（`app` target 才会生成 updater 包） |
+| Windows runner 默认 pwsh | `[ -z "$KEY" ]` 语法错，签名检查步骤失败，看着像 secret 没配 | 所有 `run:` 步骤都写 `shell: bash` |
+| 中文 productName | 资产名被清洗成 `_0.8.17_aarch64.dmg`、`_aarch64.app.tar.gz` | 不影响安装；但 tauri-action 拼不出解析名，`latest.json` 由单独的 `latest-json` job 生成 |
+| `latest.json` 缺失 | `releases/latest/download/latest.json` 404，检查更新直接失败 | `latest-json` job 下载 release 里的 `*.sig`，按资产名判平台后拼 `{version, notes, pub_date, platforms}` 上传 |
+
+自建源注意：Tauri **只接受 https** 的 updater endpoint，`http://` 会在启动时报
+「must use a secure protocol like https」。
+
 ## 已知限制
 
 - 上传进度只有阶段（上传中/解析中），没有百分比：reqwest 用整块 body 发送，拿不到细粒度进度。
