@@ -33,13 +33,9 @@
         serverUrl = DEFAULT_SERVER_URL;
       }
       return {
+        // 身份相关的字段一律没有默认值：账号、租户、知识库都用登录后后端返回的真实值，
+        // 否则会出现「没登录却像已登录」「上传打到别人的租户」这类怪事。
         serverUrl,
-        email: 'liumingqing@company.local',
-        userName: 'liumingqing',
-        tenantId: 10009,
-        tenantName: "刘明青's Workspace",
-        kbId: '2d33c3a6-4618-4c89-952a-3a802a5986ae',
-        kbName: '刘明青',
         ...data,
         serverUrl
       };
@@ -233,12 +229,12 @@
         serverUrl: c.serverUrl || DEFAULT_SERVER_URL,
         token: c.token || '',
         user: c.user || null,
-        userName: c.userName || (c.user && (c.user.username || c.user.name)) || 'liumingqing',
-        tenantName: c.tenantName || "刘明青's Workspace",
-        kbId: c.kbId || '2d33c3a6-4618-4c89-952a-3a802a5986ae',
-        kbName: c.kbName || '刘明青',
-        tenantId: c.tenantId || 10009,
-        email: c.email || 'liumingqing@company.local',
+        userName: c.userName || (c.user && (c.user.username || c.user.name)) || '',
+        tenantName: c.tenantName || '',
+        kbId: c.kbId || '',
+        kbName: c.kbName || '',
+        tenantId: Number(c.tenantId) || 0,
+        email: c.email || '',
         petPos: c.petPos || null,
         sidebarOpen: localStorage.getItem('deskpet_sidebar_open') !== '0',
         uploads: []
@@ -246,10 +242,12 @@
     },
 
     login: async ({ serverUrl, email, password }) => {
+      // 不再带任何默认账号/密码：账号密码只能由用户自己输入。
+      const account = normalizeAccount(String(email || '').trim());
+      const pass = String(password || '');
+      if (!account || !pass) return { ok: false, error: '请输入账号和密码' };
       const targetServerUrl = String(serverUrl || loadCfg().serverUrl || DEFAULT_SERVER_URL).trim().replace(/\/+$/, '');
       saveCfg({ serverUrl: targetServerUrl });
-      const account = normalizeAccount(email || 'liumingqing');
-      const pass = password || 'hxgs123654';
       try {
         const data = await apiRequest('/auth/login', {
           method: 'POST',
@@ -261,8 +259,10 @@
         if (!token) throw new Error(data.message || '登录失败：未获取到 Token');
         const user = data.user || data.data?.user || { username: account, email: account };
         const activeTenant = data.active_tenant || data.data?.active_tenant || {};
-        const tenantId = Number(activeTenant.id) || 10009;
-        const tenantName = activeTenant.name || "刘明青's Workspace";
+        // 租户以登录返回的 active_tenant 为准；后端没给就退回用户自己的 tenant_id，
+        // 绝不写死某个租户号——写死过一次（10000），表现为所有上传都 403。
+        const tenantId = Number(activeTenant.id) || Number(user.tenant_id) || 0;
+        const tenantName = activeTenant.name || '';
         const refreshToken =
           data.refreshToken || data.refresh_token ||
           data.data?.refreshToken || data.data?.refresh_token || '';
@@ -275,19 +275,20 @@
 
         const ownKbs = allKbs.filter(k => !k.shared);
         const writableKbs = allKbs.filter(k => !k.shared || k.permission === 'editor' || k.permission === 'owner');
-        const pick = ownKbs[0] || writableKbs[0] || allKbs[0] || { id: '2d33c3a6-4618-4c89-952a-3a802a5986ae', name: '刘明青', documents: 2 };
+        // 不再兜底到某个人的知识库：一个都读不到就先登录进去，让用户在面板里自己选
+        const pick = ownKbs[0] || writableKbs[0] || allKbs[0] || null;
 
         saveCfg({
           token,
           // 刷新令牌用于 access token 过期后自动续期（有效期 1 天，原来过期就只能重新登录）
           refreshToken,
           user,
-          userName: user.username || user.name || 'liumingqing',
+          userName: user.username || user.name || account,
           tenantId,
           tenantName,
           email: account,
-          kbId: pick.id,
-          kbName: pick.name,
+          kbId: pick ? pick.id : '',
+          kbName: pick ? pick.name : '',
           serverUrl: targetServerUrl,
           memberships: data.memberships || []
         });
@@ -297,11 +298,11 @@
           loggedIn: true,
           token,
           user,
-          userName: user.username || user.name || 'liumingqing',
+          userName: user.username || user.name || account,
           tenantId,
           tenantName,
-          kbId: pick.id,
-          kbName: pick.name,
+          kbId: pick ? pick.id : '',
+          kbName: pick ? pick.name : '',
           kbs: writableKbs,
           serverUrl: targetServerUrl,
           email: account
@@ -323,8 +324,9 @@
       try {
         const allKbs = await fetchAllKBs();
         const cfg = loadCfg();
-        const tid = cfg.tenantId || 10009;
-        const tname = cfg.tenantName || "刘明青's Workspace";
+        // 没有默认租户：登录后由后端返回的 active_tenant 落盘，读不到就留 0
+        const tid = Number(cfg.tenantId) || 0;
+        const tname = cfg.tenantName || '';
 
         // 个人空间：自己创建的库
         const ownKbs = allKbs.filter(k => !k.shared);
@@ -349,7 +351,9 @@
           });
         }
         if (sharedWritableKbs.length) {
-          const deptTenantId = sharedWritableKbs[0]?.tenantId || 10000;
+          // 共享库的租户号取后端返回的那一个；万一没带，退回当前登录用户自己的租户。
+          // 这里曾经写死过 10000，导致切到共享库后上传一律 403。
+          const deptTenantId = sharedWritableKbs[0]?.tenantId || tid || 0;
           const deptName = sharedWritableKbs[0]?.orgName ? `${sharedWritableKbs[0].orgName}部门` : '部门空间';
           groups.push({
             tenantId: deptTenantId,

@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version tag (e.g. v0.8.15)"
+        description: "Release version tag (e.g. v0.8.16)"
         required: false
-        default: "v0.8.15"
+        default: "v0.8.16"
 
 jobs:
   release:
@@ -63,8 +63,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: "./tauri-app"
-          tagName: ${{ github.ref_name != 'main' && github.ref_name || inputs.version || 'v0.8.15' }}
-          releaseName: "知识小助 ${{ github.ref_name != 'main' && github.ref_name || inputs.version || 'v0.8.15' }}"
+          tagName: ${{ github.ref_name != 'main' && github.ref_name || inputs.version || 'v0.8.16' }}
+          releaseName: "知识小助 ${{ github.ref_name != 'main' && github.ref_name || inputs.version || 'v0.8.16' }}"
           releaseBody: "华夏国数知识小助桌面端最新发布包。"
           releaseDraft: false
           prerelease: false
