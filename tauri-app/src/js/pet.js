@@ -295,6 +295,11 @@ document.addEventListener('drop', async (e) => {
     return
   }
 
+  handlePetUpload(paths)
+})
+
+async function handlePetUpload(paths) {
+  if (!paths || !paths.length) return
   say(`收到 ${paths.length} 个，正在读…`, 0)
   setState('eating')
   const r = await window.pet.uploadPaths(paths)
@@ -303,6 +308,14 @@ document.addEventListener('drop', async (e) => {
     setState('alert')
     return
   }
+  say(`已加入上传队列（${paths.length} 项）`, 3000)
+  setState('idle')
+}
+
+// 暴露给 Tauri 原生拖拽事件
+window.handlePetDropFromTauri = (paths) => {
+  if (paths && paths.length) handlePetUpload(paths)
+}
   if (r && r.queued === 0) {
     say('这些文件格式不支持或超过 50MB', 5000)
     setState('alert')

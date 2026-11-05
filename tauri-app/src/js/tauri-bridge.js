@@ -96,6 +96,18 @@
     eventMod.listen('upload:update', (e) => emit('upload:update', e.payload));
     eventMod.listen('toast', (e) => emit('toast', e.payload));
     eventMod.listen('panel:shown', (e) => emit('panel:shown', e.payload));
+
+    // 原生拖拽支持：Tauri 2 拦截了系统级拖拽事件并转发为 tauri://drag-drop
+    eventMod.listen('tauri://drag-drop', (e) => {
+      const paths = e.payload?.paths || [];
+      if (paths && paths.length) {
+        if (typeof window.stagePathsFromTauri === 'function') {
+          window.stagePathsFromTauri(paths);
+        } else if (typeof window.handlePetDropFromTauri === 'function') {
+          window.handlePetDropFromTauri(paths);
+        }
+      }
+    });
   }
 
   function normalizeBase() {
@@ -660,9 +672,11 @@
     pathForFile: (file) => file.name || file.path || '',
     describePaths: async (paths) => (paths || []).map(p => ({
       path: p,
-      name: p.split(/[/\\]/).pop(),
-      size: 1024,
-      isDir: false
+      name: String(p).split(/[/\\]/).pop() || p,
+      size: 1024 * 64,
+      isDir: false,
+      dir: false,
+      ok: true
     })),
 
     openWeb: () => {
@@ -673,6 +687,8 @@
     openLocalNetworkSettings: () => ({ ok: true }),
 
     // 存入面板文件拾取
+    pickFiles: () => pet.storePick('files'),
+    pickFolder: () => pet.storePick('folder'),
     storePick: async (kind) => {
       return new Promise((resolve) => {
         const inp = document.createElement('input');
@@ -687,12 +703,17 @@
             resolve({ canceled: true });
             return;
           }
-          const items = Array.from(inp.files).map(f => ({
-            path: f.name,
-            name: f.name,
-            size: f.size,
-            isDir: kind === 'folder'
-          }));
+          const items = Array.from(inp.files).map(f => {
+            const fullPath = f.path || f.name;
+            return {
+              path: fullPath,
+              name: f.name,
+              size: f.size || 1024 * 64,
+              isDir: kind === 'folder',
+              dir: kind === 'folder',
+              ok: true
+            };
+          });
           resolve({ canceled: false, items });
         };
         inp.oncancel = () => resolve({ canceled: true });

@@ -1447,12 +1447,17 @@ function stagePaths(paths) {
         name: it.name,
         size: it.size,
         dir: it.dir,
-        ok: it.ok
+        ok: it.ok !== false
       })
     }
     renderShelf()
     if (items && items.length) toast(`放进来 ${items.length} 项，点「存入」才会上传`)
   })
+}
+
+// 暴露给 Tauri 原生事件调用
+window.stagePathsFromTauri = (paths) => {
+  if (paths && paths.length) stagePaths(paths)
 }
 
 function stageText(title, content) {
