@@ -168,6 +168,7 @@ let dragging = false
 let bubbleTimer = null
 let partyTimer = null
 let uploading = false
+let uploadStallTimer = null
 
 function setState(s) {
   document.body.dataset.state = s
@@ -195,6 +196,10 @@ function squish(on) {
 let lastScreenX = 0
 let lastScreenY = 0
 let tilt = 0
+// 位移的亚像素余量：screenX 可能是小数，攒够 1px 再发。
+// 不然极慢拖动时每次增量都被取整吃掉，窗口干脆不动。
+let accX = 0
+let accY = 0
 
 petEl.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return
@@ -224,12 +229,22 @@ window.addEventListener('pointermove', (e) => {
 
   tilt = Math.max(-8, Math.min(8, tilt * 0.55 + dx * 1.1))
   petEl.style.transform = `rotate(${tilt}deg)`
-  if (dx !== 0 || dy !== 0) {
-    window.pet.dragMove(dx, dy)
+
+  // 攒够整像素再交给 Rust，余量留到下一次，避免亚像素被反复截断
+  accX += dx
+  accY += dy
+  const mx = Math.trunc(accX)
+  const my = Math.trunc(accY)
+  if (mx !== 0 || my !== 0) {
+    accX -= mx
+    accY -= my
+    window.pet.dragMove(mx, my)
   }
 })
 
-function endPress() {
+// 只有真正的「按下-松开」才算点击。拖拽收尾时浏览器还会补发 click，
+// 早期版本用 click 打开面板，结果每次拖完都会弹一次面板。
+function endPress(openPanel) {
   if (!press) return
   if (dragging) {
     document.body.classList.remove('dragging')
@@ -238,21 +253,18 @@ function endPress() {
     window.pet.dragEnd()
   } else {
     squish(false)
-    window.pet.showPanel()
+    if (openPanel) window.pet.showPanel()
   }
   press = null
   dragging = false
+  accX = 0
+  accY = 0
 }
 
-window.addEventListener('pointerup', endPress)
-window.addEventListener('pointercancel', endPress)
-window.addEventListener('blur', endPress)
-
-petEl.addEventListener('click', () => {
-  if (!dragging) {
-    window.pet.showPanel()
-  }
-})
+window.addEventListener('pointerup', () => endPress(true))
+// 取消 / 失焦都不该顺手把面板弹出来
+window.addEventListener('pointercancel', () => endPress(false))
+window.addEventListener('blur', () => endPress(false))
 
 window.addEventListener('contextmenu', (e) => {
   e.preventDefault()
@@ -291,6 +303,10 @@ document.addEventListener('drop', async (e) => {
   document.body.classList.remove('dragover')
   dropHint.classList.add('hidden')
 
+  // 桌面端只认原生拖放（能拿到真实路径），HTML5 的 drop 只能给到文件名，
+  // 而且两条链路都处理会导致同一批文件被提交两次 —— 所以这里直接让路。
+  if (window.__TAURI__) return
+
   const files = Array.from(e.dataTransfer.files || [])
   const paths = files.map((f) => window.pet.pathForFile(f)).filter(Boolean)
   if (!paths.length) {
@@ -301,29 +317,34 @@ document.addEventListener('drop', async (e) => {
   handlePetUpload(paths)
 })
 
+// 拖到桌宠身上的文件不再自己上传，转给面板统一「存入」：
+// 上传只保留一个出口，否则面板一份、桌宠一份，同一个文件会在队列里出现两行。
+window.handlePetDropFromTauri = (paths) => {
+  if (!paths || !paths.length) return
+  window.pet.showPanel()
+  window.pet.stagePathsInPanel(paths)
+  say(`收到 ${paths.length} 个，去面板点「存入」`, 4500)
+  setState('idle')
+}
+
 async function handlePetUpload(paths) {
   if (!paths || !paths.length) return
   say(`收到 ${paths.length} 个，正在读…`, 0)
   setState('eating')
-  const r = await window.pet.uploadPaths(paths)
-  if (r && r.error) {
-    say(r.error, 5000)
+  const r = (await window.pet.uploadPaths(paths)) || {}
+  if (r.error) {
+    say(r.error, 6000)
     setState('alert')
     return
   }
-  say(`已加入上传队列（${paths.length} 项）`, 3000)
+  if (!r.queued) {
+    say(r.exists ? '这些文件库里已经都有了' : '这些文件读不到', 5000)
+    setState('alert')
+    return
+  }
+  say(`已加入上传队列（${r.queued} 项）`, 3000)
   setState('idle')
 }
-
-// 暴露给 Tauri 原生拖拽事件
-window.handlePetDropFromTauri = (paths) => {
-  if (paths && paths.length) handlePetUpload(paths)
-}
-  if (r && r.queued === 0) {
-    say('这些文件格式不支持或超过 50MB', 5000)
-    setState('alert')
-  }
-})
 
 /* ---------- 上传进度 ---------- */
 
@@ -337,9 +358,17 @@ window.pet.onUploadUpdate(({ stats }) => {
     setState('eating')
     const total = stats.total
     const done = stats.done + stats.exists + stats.failed
-    say(`${done}/${total} 已处理`, 0)
+    // 上传和解析是两个阶段，进度条数字一样但含义不同，用户在等的时候需要知道在等什么
+    const phase = stats.parsing > 0 && !stats.uploading && !stats.queued ? '解析中' : '上传中'
+    say(`${phase} ${done}/${total}`, 0)
+    // 45 秒没有任何状态变化（Rust 每 2 秒会推一次解析进度）说明卡住了，别再让气泡假装在跑
+    clearTimeout(uploadStallTimer)
+    uploadStallTimer = setTimeout(() => {
+      if (uploading) say('这会儿有点慢，点我看进度', 8000)
+    }, 45000)
     return
   }
+  clearTimeout(uploadStallTimer)
   if (stats.failed > 0) {
     setState('alert')
     say(`${stats.failed} 个没成功，点我看详情`, 8000)

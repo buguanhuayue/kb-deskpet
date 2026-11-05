@@ -532,7 +532,10 @@ async function enterMain() {
   currentTenant = Number(state.tenantId) || 0
   await refreshKBs()
   const ups = await window.pet.listUploads()
-  renderQueue(ups)
+  // 必须回填 queueItems：否则重开面板时列表画的是旧数组，下一次 upload:update
+  // 只会渲染「新来的那一条」，之前的历史看起来凭空消失了。
+  queueItems = Array.isArray(ups) ? ups : []
+  renderQueue(queueItems)
   await initSessions()
 }
 
@@ -1435,11 +1438,23 @@ function closeStore() {
   el.input.focus()
 }
 
+const stagingPaths = new Set()
+
 function stagePaths(paths) {
   // 拖到「存入」落点时要顺手把面板拉开：光进清单但不显示，等于什么都没发生
   if (!isStoreOpen()) openStore()
-  return window.pet.describePaths(paths).then((items) => {
+  // 原生拖放 + 桌宠转发 + BroadcastChannel 回环可能把同一批路径送来两三次，
+  // 而 describePaths 是异步的：两次调用都可能在对方 push 之前通过 shelf 检查，
+  // 所以除了 shelf 去重，还要挡住「正在解析中」的同一路径。
+  const batch = (paths || []).filter((p) => p && !stagingPaths.has(p))
+  if (!batch.length) return Promise.resolve()
+  batch.forEach((p) => stagingPaths.add(p))
+  return window.pet.describePaths(batch).then((items) => {
+    let added = 0
     for (const it of items || []) {
+      // 同一路径只进清单一遍：原生拖放 + 桌宠转发可能把同一批文件送进来两次，
+      // 不去重就会「放进来 1 项」但清点出两条、提交两次。
+      if (shelf.some((s) => s.kind === 'file' && s.path === it.path)) continue
       shelf.push({
         key: 's' + ++shelfSeq,
         kind: 'file',
@@ -1449,9 +1464,12 @@ function stagePaths(paths) {
         dir: it.dir,
         ok: it.ok !== false
       })
+      added++
     }
     renderShelf()
-    if (items && items.length) toast(`放进来 ${items.length} 项，点「存入」才会上传`)
+    if (added) toast(`放进来 ${added} 项，点「存入」才会上传`)
+  }).finally(() => {
+    batch.forEach((p) => stagingPaths.delete(p))
   })
 }
 
@@ -1459,6 +1477,12 @@ function stagePaths(paths) {
 window.stagePathsFromTauri = (paths) => {
   if (paths && paths.length) stagePaths(paths)
 }
+
+// 桌宠窗口把拖到它身上的文件转过来，由面板统一收口
+window.pet.onStoreStage((payload) => {
+  const paths = (payload && payload.paths) || []
+  if (paths.length) stagePaths(paths)
+})
 
 function stageText(title, content) {
   shelf.push({ key: 's' + ++shelfSeq, kind: 'text', title: title || '粘贴的内容', content })
@@ -1522,13 +1546,19 @@ async function commitStore() {
   el.storeCommit.disabled = true
   el.storeCommit.textContent = '提交中…'
   let failed = 0
+  let queued = 0
+  let existed = 0
   try {
     if (files.length || dirs.length) {
-      const r = await window.pet.uploadPaths([...files, ...dirs])
-      if (r && r.error) {
+      const r = (await window.pet.uploadPaths([...files, ...dirs])) || {}
+      if (r.error) {
         failed++
         toast(r.error, 'warn')
       }
+      // 真实上传在 Rust 侧排队：queued 是这次真正进队的数量，
+      // exists 是库里已经有、被去重掉的数量
+      queued += r.queued || 0
+      existed += r.exists || 0
     }
     for (const t of texts) {
       const r = await window.pet.uploadText({ title: t.title, content: t.content })
@@ -1543,7 +1573,9 @@ async function commitStore() {
   }
   closeStore()
   if (!failed) {
-    sysNote(`已提交 ${total} 项到「${kb}」，解析完成后就能搜到`)
+    let note = `已提交 ${queued + texts.length} 项到「${kb}」`
+    if (existed) note += `，另外 ${existed} 项库里已经有`
+    sysNote(`${note}，解析完成后就能搜到`)
   } else {
     sysNote(`有 ${failed} 组没能提交成功，重试一次试试`)
   }
@@ -1595,11 +1627,46 @@ el.storeCancel.addEventListener('click', () => {
 })
 el.storeCommit.addEventListener('click', commitStore)
 
+// 「选文件 / 选文件夹」拿回来的 items 里已经有真实路径和文件信息（Rust 侧 stat 过），
+// 直接进清单，不再 describe 一次。
+function stageItems(items) {
+  if (!isStoreOpen()) openStore()
+  let added = 0
+  let bad = 0
+  for (const it of items || []) {
+    const path = it && it.path
+    if (!path) continue
+    // 只有文件名、没有目录分隔符 = webview 没给绝对路径，存了也是 404
+    if (!/[\\/]/.test(path)) {
+      bad++
+      continue
+    }
+    if (shelf.some((s) => s.kind === 'file' && s.path === path)) continue
+    shelf.push({
+      key: 's' + ++shelfSeq,
+      kind: 'file',
+      path,
+      name: it.name || path.split(/[/\\]/).pop(),
+      size: it.size,
+      dir: !!(it.dir || it.isDir),
+      ok: it.ok !== false
+    })
+    added++
+  }
+  renderShelf()
+  if (bad && !added) return toast('系统只给到了文件名，改用「拖进来」试试', 'warn')
+  if (added) toast(`放进来 ${added} 项，点「存入」才会上传`)
+}
+
 async function stagePick(kind) {
   const r = await window.pet.storePick(kind)
   if (!r || r.canceled) return
   if (r.error) return toast(r.error, 'warn')
-  await stagePaths((r.items || []).map((i) => i.path))
+  const items = r.items || []
+  if (!items.length) return
+  if (items.every((i) => i && i.path && /[\\/]/.test(i.path))) return stageItems(items)
+  // 老路径（拿不到绝对路径）兜底：交给 describePaths 再判断一次
+  await stagePaths(items.map((i) => i.path))
 }
 
 el.storeDrop.addEventListener('click', () => stagePick('files'))
@@ -1693,6 +1760,9 @@ document.addEventListener('dragleave', () => {
 document.addEventListener('drop', async (e) => {
   if (!hasFiles(e)) return
   e.preventDefault()
+  // 桌面端走原生拖放（能拿到真实路径）；HTML5 drop 只给文件名，
+  // 而且与原生事件同时处理会把同一批文件收两遍。
+  if (window.__TAURI__) return
   const zone = zoneAt(e.clientX, e.clientY)
   const storeOpen = isStoreOpen()
   hideDropLayer()
@@ -1815,7 +1885,10 @@ function renderQueue(items) {
 let queueItems = []
 window.pet.onUploadUpdate(({ item }) => {
   if (item && item.id && item.id !== 'all') {
-    const i = queueItems.findIndex((x) => x.id === item.id)
+    // 先按 id 合并；找不到再按路径合并 —— 桌宠窗口和面板窗口各有自己的队列，
+    // 同一文件若从两个窗口都上传过，id 不同但 path 相同，只按 id 去重会画成两行。
+    let i = queueItems.findIndex((x) => x.id === item.id)
+    if (i < 0 && item.path) i = queueItems.findIndex((x) => x.path === item.path)
     if (i >= 0) queueItems[i] = item
     else queueItems.push(item)
   } else {
@@ -1833,6 +1906,13 @@ $('btnClearQueue').addEventListener('click', async () => {
   await window.pet.clearUploads()
   queueItems = await window.pet.listUploads()
   renderQueue(queueItems)
+})
+
+// 令牌彻底过期（自动续期也失败）：退回登录页，否则接下来每个操作都只会静默失败
+window.pet.onAuthExpired?.(() => {
+  toast('登录已过期，请重新登录', 'warn')
+  state = { ...(state || {}), loggedIn: false, token: '' }
+  show('login')
 })
 
 /* ---------------- 更多菜单 / 关闭 ---------------- */

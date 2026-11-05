@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod upload;
+
 use tauri::{AppHandle, Emitter, LogicalPosition, Manager, PhysicalPosition, Position};
 
 #[tauri::command]
@@ -47,11 +49,18 @@ fn toggle_panel(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn move_window(app: AppHandle, window_label: Option<String>, dx: i32, dy: i32) -> Result<(), String> {
+fn move_window(app: AppHandle, window_label: Option<String>, dx: f64, dy: f64) -> Result<(), String> {
     let label = window_label.unwrap_or_else(|| "pet".to_string());
     if let Some(win) = app.get_webview_window(&label) {
+        // JS 传来的 dx/dy 来自 screenX/screenY 增量，单位是 CSS 像素（逻辑像素）；
+        // 而 outer_position / set_position 走的是物理像素。Retina 或 125%/150% 缩放下
+        // 不乘 scale_factor，窗口只会移动一半/三分之二的距离——就是「拖不动、不跟手」。
+        let scale = win.scale_factor().unwrap_or(1.0);
         if let Ok(pos) = win.outer_position() {
-            let _ = win.set_position(PhysicalPosition::new(pos.x + dx, pos.y + dy));
+            let _ = win.set_position(PhysicalPosition::new(
+                pos.x + (dx * scale).round() as i32,
+                pos.y + (dy * scale).round() as i32,
+            ));
         }
     }
     Ok(())
@@ -90,6 +99,9 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        // 「选文件 / 选文件夹」用系统对话框：webview 的 input[type=file] 拿不到绝对路径
+        .plugin(tauri_plugin_dialog::init())
+        .manage(upload::UploadState::new())
         .invoke_handler(tauri::generate_handler![
             show_panel,
             hide_panel,
@@ -98,7 +110,14 @@ fn main() {
             reset_pet_position,
             start_dragging,
             emit_event,
-            app_quit
+            app_quit,
+            upload::upload_enqueue,
+            upload::upload_list,
+            upload::upload_clear,
+            upload::upload_retry,
+            upload::upload_set_cfg,
+            upload::describe_paths,
+            upload::pick_paths
         ])
         .setup(|app| {
             if let Some(pet) = app.get_webview_window("pet") {
@@ -108,8 +127,9 @@ fn main() {
                     let size = monitor.size();
                     let logical_w = size.width as f64 / scale;
                     let logical_h = size.height as f64 / scale;
-                    let x = (logical_w - 220.0).max(50.0);
-                    let y = (logical_h - 260.0).max(50.0);
+                    // 桌宠窗口已缩到 112×110（形象按 1/3 显示），右下角留白沿用原来的 20 / 60
+                    let x = (logical_w - 132.0).max(50.0);
+                    let y = (logical_h - 170.0).max(50.0);
                     let _ = pet.set_position(Position::Logical(LogicalPosition::new(x, y)));
                 } else {
                     let _ = pet.center();

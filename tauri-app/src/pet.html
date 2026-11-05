@@ -9,18 +9,22 @@
 <body data-state="idle">
   <div id="bubble" class="bubble hidden"><span id="bubbleText">0/0</span></div>
 
-  <div id="pet" class="pet" title="拖文件给我，或点我提问">
-    <!-- pet-anim 负责状态动画，外层 .pet 留给点击挤压 / 拖动倾斜，互不打架 -->
-    <div id="petAnim" class="pet-anim">
-      <!-- 两层底图交叉淡入，换状态时不会闪 -->
-      <img id="petA" class="pet-img on" src="/assets/pet/rig/idle-base2.png" alt="" draggable="false" />
-      <img id="petB" class="pet-img" src="/assets/pet/rig/idle-base2.png" alt="" draggable="false" />
-      <!-- 眼睛独立图层，用于眨眼（底图上对应的位置已填平） -->
-      <!-- 肢体独立图层：头顶的书 / 右手卷轴，底图上已挖空，用来做摆动 -->
-      <img id="petBook" class="pet-part" alt="" draggable="false" />
-      <img id="petScroll" class="pet-part" alt="" draggable="false" />
-      <img id="eyeL" class="pet-eye" alt="" draggable="false" />
-      <img id="eyeR" class="pet-eye" alt="" draggable="false" />
+  <!-- pet-scale：把整只形象等比缩小（含眼睛/肢体/动效），窗口尺寸随之收小，
+       避免大块透明区域挡住下层应用。改 --pet-scale 时记得同步窗口尺寸 -->
+  <div id="petScale" class="pet-scale">
+    <div id="pet" class="pet" title="拖文件给我，或点我提问">
+      <!-- pet-anim 负责状态动画，外层 .pet 留给点击挤压 / 拖动倾斜，互不打架 -->
+      <div id="petAnim" class="pet-anim">
+        <!-- 两层底图交叉淡入，换状态时不会闪 -->
+        <img id="petA" class="pet-img on" src="/assets/pet/rig/idle-base2.png" alt="" draggable="false" />
+        <img id="petB" class="pet-img" src="/assets/pet/rig/idle-base2.png" alt="" draggable="false" />
+        <!-- 眼睛独立图层，用于眨眼（底图上对应的位置已填平） -->
+        <!-- 肢体独立图层：头顶的书 / 右手卷轴，底图上已挖空，用来做摆动 -->
+        <img id="petBook" class="pet-part" alt="" draggable="false" />
+        <img id="petScroll" class="pet-part" alt="" draggable="false" />
+        <img id="eyeL" class="pet-eye" alt="" draggable="false" />
+        <img id="eyeR" class="pet-eye" alt="" draggable="false" />
+      </div>
     </div>
   </div>
 

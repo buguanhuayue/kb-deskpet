@@ -89,6 +89,7 @@
   }
 
   const tauriObj = window.__TAURI__;
+  const IS_TAURI = !!tauriObj;
   const eventMod = tauriObj?.event || (tauriObj?.core && tauriObj.core.event);
   if (eventMod && typeof eventMod.listen === 'function') {
     eventMod.listen('pet:state', (e) => emit('pet:state', e.payload));
@@ -96,6 +97,18 @@
     eventMod.listen('upload:update', (e) => emit('upload:update', e.payload));
     eventMod.listen('toast', (e) => emit('toast', e.payload));
     eventMod.listen('panel:shown', (e) => emit('panel:shown', e.payload));
+    // 桌宠窗口收到的拖放结果统一转给面板处理（上传只有一个出口）
+    eventMod.listen('store:stage', (e) => emit('store:stage', e.payload));
+
+    // 令牌刷新/过期由 Rust 侧判定，回传到前端落盘或提示重新登录
+    eventMod.listen('auth:updated', (e) => {
+      const p = e.payload || {};
+      if (p.token) {
+        saveCfg(p.refreshToken ? { token: p.token, refreshToken: p.refreshToken } : { token: p.token });
+        emit('auth:updated', p);
+      }
+    });
+    eventMod.listen('auth:expired', () => emit('auth:expired', {}));
 
     // 原生拖拽支持：Tauri 2 拦截了系统级拖拽事件并转发为 tauri://drag-drop
     eventMod.listen('tauri://drag-drop', (e) => {
@@ -139,6 +152,8 @@
     return json;
   }
 
+  // 真实上传跑在 Rust 侧（队列 + 轮询 + 令牌刷新），这里只做转发。
+  // 浏览器里直接开（没有 Tauri 运行时）时退回本地模拟，方便调样式。
   let uploadQueue = [];
   const getStats = () => {
     const s = { total: uploadQueue.length, queued: 0, running: 0, done: 0, failed: 0, exists: 0 };
@@ -240,12 +255,17 @@
           method: 'POST',
           body: { email: account, password: pass }
         });
-        const token = data.token || data.data?.token;
+        // 后端登录返回的令牌字段在不同版本里分别是 token / access_token，
+        // 刷新令牌则是新增的，没有它 access token 一天后过期就只能重新登录。
+        const token = data.token || data.data?.token || data.access_token;
         if (!token) throw new Error(data.message || '登录失败：未获取到 Token');
         const user = data.user || data.data?.user || { username: account, email: account };
         const activeTenant = data.active_tenant || data.data?.active_tenant || {};
         const tenantId = Number(activeTenant.id) || 10009;
         const tenantName = activeTenant.name || "刘明青's Workspace";
+        const refreshToken =
+          data.refreshToken || data.refresh_token ||
+          data.data?.refreshToken || data.data?.refresh_token || '';
 
         // 获取完整知识库列表（包括个人库与共享库）
         let allKbs = [];
@@ -259,6 +279,8 @@
 
         saveCfg({
           token,
+          // 刷新令牌用于 access token 过期后自动续期（有效期 1 天，原来过期就只能重新登录）
+          refreshToken,
           user,
           userName: user.username || user.name || 'liumingqing',
           tenantId,
@@ -639,24 +661,60 @@
     hidePanel: () => invoke('hide_panel'),
     togglePanel: () => invoke('toggle_panel'),
     dragStart: () => {},
-    dragPanel: () => invoke('start_dragging', { window_label: 'panel' }),
+    dragPanel: () => invoke('start_dragging', { windowLabel: 'panel' }),
     dragMove: (dx, dy) => {
+      // 参数名必须是 windowLabel：Tauri v2 的命令参数默认按 camelCase 反序列化，
+      // 写成 window_label 会被忽略，window_label 落空后 Rust 侧一律回退成 "pet"——
+      // 于是「拖面板」实际拖的是桌宠，表现为面板纹丝不动。
+      // 不在这里取整：整数化交给调用方按余量攒，Rust 侧再按 scale_factor 换算成物理像素
       if (dx || dy) {
-        invoke('move_window', { window_label: 'pet', dx: Math.round(dx || 0), dy: Math.round(dy || 0) });
+        invoke('move_window', { windowLabel: 'pet', dx: dx || 0, dy: dy || 0 });
       }
     },
     dragEnd: () => {},
     petMenu: () => invoke('toggle_panel'),
     quit: () => invoke('app_quit'),
 
+    // 拖到桌宠身上的文件交给面板统一「存入」，避免两个窗口各自上传同一批文件
+    stagePathsInPanel: (paths) => {
+      if (!paths || !paths.length) return
+      broadcast('store:stage', { paths })
+    },
+    onStoreStage: (cb) => on('store:stage', cb),
+
     openUrl: (url) => {
       window.open(url, '_blank');
     },
 
-    // 上传与队列
+    // 上传与队列：真实上传在 Rust 侧完成（流式读盘 + multipart + 解析轮询 + 令牌刷新），
+    // 这里只负责把当前登录态连同路径交过去。队列本身也只有一份，两个窗口共用。
     uploadPaths: async (paths) => {
-      if (!paths || !paths.length) return { queued: 0 };
+      if (!paths || !paths.length) return { queued: 0, exists: 0 };
+      const cfg = loadCfg();
+      if (IS_TAURI) {
+        const r = await invoke('upload_enqueue', {
+          paths,
+          cfg: {
+            serverUrl: cfg.serverUrl || DEFAULT_SERVER_URL,
+            token: cfg.token || '',
+            refreshToken: cfg.refreshToken || '',
+            tenantId: Number(cfg.tenantId) || 0,
+            kbId: cfg.kbId || ''
+          }
+        });
+        if (!r) return { queued: 0, exists: 0, error: '上传服务不可用' };
+        return r;
+      }
+
+      // 非 Tauri（纯浏览器预览）时的降级实现，仅用于调样式
+      const known = new Map(
+        uploadQueue.filter(i => i.status !== 'failed').map(i => [i.path, i])
+      );
+      let exists = 0;
+      let added = 0;
       for (const p of paths) {
+        if (!p) continue;
+        if (known.has(p)) { exists++; continue; }
         const item = {
           id: 'u_' + Date.now() + Math.random().toString(36).slice(2, 6),
           name: p.split(/[/\\]/).pop(),
@@ -664,6 +722,8 @@
           status: 'queued',
           progress: 0
         };
+        known.set(p, item);
+        added++;
         uploadQueue.push(item);
         notifyUploadUpdate(item);
 
@@ -676,25 +736,37 @@
           }, 1500);
         }, 500);
       }
-      return { queued: paths.length };
+      return { queued: added, exists };
     },
 
-    listUploads: async () => uploadQueue,
+    listUploads: async () => {
+      if (!IS_TAURI) return uploadQueue;
+      const r = await invoke('upload_list');
+      return Array.isArray(r) ? r : [];
+    },
     clearUploads: async () => {
+      if (IS_TAURI) return (await invoke('upload_clear')) || { ok: true };
       uploadQueue = uploadQueue.filter(i => i.status !== 'done' && i.status !== 'failed');
       broadcast('upload:update', { stats: getStats() });
       return { ok: true };
     },
 
     pathForFile: (file) => file.name || file.path || '',
-    describePaths: async (paths) => (paths || []).map(p => ({
-      path: p,
-      name: String(p).split(/[/\\]/).pop() || p,
-      size: 1024 * 64,
-      isDir: false,
-      dir: false,
-      ok: true
-    })),
+    describePaths: async (paths) => {
+      const list = paths || [];
+      if (IS_TAURI) {
+        const r = await invoke('describe_paths', { paths: list });
+        if (Array.isArray(r) && r.length) return r;
+      }
+      return list.map(p => ({
+        path: p,
+        name: String(p).split(/[/\\]/).pop() || p,
+        size: 0,
+        isDir: false,
+        dir: false,
+        ok: true
+      }));
+    },
 
     openWeb: () => {
       const cfg = loadCfg();
@@ -707,6 +779,18 @@
     pickFiles: () => pet.storePick('files'),
     pickFolder: () => pet.storePick('folder'),
     storePick: async (kind) => {
+      // 桌面端必须走系统对话框：webview 的 <input type="file"> 只给 File.name，
+      // 拿不到绝对路径（File.path 是 Electron 的私货），describe_paths 会把每一项
+      // 都判成「读不到」，于是「选文件」能选、却永远存不进去。
+      if (IS_TAURI) {
+        try {
+          const r = await invoke('pick_paths', { kind: kind === 'folder' ? 'folder' : 'files' });
+          if (r && Array.isArray(r.items)) return r;
+          return { canceled: true, items: [] };
+        } catch (e) {
+          return { canceled: true, items: [], error: String(e && e.message ? e.message : e) };
+        }
+      }
       return new Promise((resolve) => {
         const inp = document.createElement('input');
         inp.type = 'file';
@@ -745,7 +829,11 @@
     hasClipboardImage: async () => false,
     tempImage: async () => null,
 
-    retryUpload: (id) => {
+    retryUpload: async (id) => {
+      if (IS_TAURI) {
+        const r = await invoke('upload_retry', { id });
+        if (r) return r;
+      }
       const it = uploadQueue.find(i => i.id === id);
       if (it) {
         it.status = 'queued';
@@ -755,6 +843,8 @@
 
     // 事件监听注册
     onUploadUpdate: (cb) => on('upload:update', cb),
+    // 令牌过期（自动续期也失败）：面板需要退回登录页
+    onAuthExpired: (cb) => on('auth:expired', cb),
     onChatEvent: (cb) => on('chat:event', cb),
     onPetState: (cb) => on('pet:state', cb),
     setPetState: (s) => broadcast('pet:state', s),
@@ -778,13 +868,9 @@
       });
     }
 
-    const titlebar = document.querySelector('.titlebar');
-    if (titlebar) {
-      titlebar.addEventListener('mousedown', (e) => {
-        if (e.target.tagName !== 'BUTTON' && !e.target.closest('button') && !e.target.closest('input')) {
-          if (window.pet && window.pet.dragPanel) window.pet.dragPanel();
-        }
-      });
-    }
+    // 面板拖动交给 Tauri 原生的 data-tauri-drag-region（见 panel.html 的 .titlebar）。
+    // 这里以前又手写了一份 mousedown → start_dragging，同一次按下会触发两次原生拖动、
+    // 互相打断；而且参数名 window_label 不匹配 Tauri 的 camelCase，
+    // 被忽略后窗口标签回退成 "pet" —— 表现就是拖面板却把桌宠拖走了。
   });
 })();

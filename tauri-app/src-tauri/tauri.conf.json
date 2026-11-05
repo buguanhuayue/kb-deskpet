@@ -1,6 +1,6 @@
 {
   "productName": "知识小助",
-  "version": "0.8.9",
+  "version": "0.8.15",
   "identifier": "com.company.deskpet",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -15,8 +15,8 @@
         "label": "pet",
         "title": "知识小助",
         "url": "pet.html",
-        "width": 200,
-        "height": 200,
+        "width": 112,
+        "height": 110,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,
