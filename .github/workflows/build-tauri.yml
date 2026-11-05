@@ -108,3 +108,54 @@ jobs:
             tauri-app/src-tauri/target/release/bundle/macos/*.app.tar.gz
             tauri-app/src-tauri/target/release/bundle/macos/*.sig
           if-no-files-found: warn
+
+  # 自己拼 latest.json：tauri-action 的自动生成在「中文 productName」这套产物名下没生效
+  # （资产被清洗成 `_aarch64.app.tar.gz`、`_0.8.17_x64-setup.exe`），这里直接读 release 里的
+  # .sig 按平台写 url —— 客户端 updater 只认这一个文件。
+  latest-json:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Build and upload latest.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name != 'main' && github.ref_name || inputs.version || 'v0.8.17' }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.sig' --dir "$work"
+          ls -l "$work"
+          VERSION="${TAG#v}" WORK="$work" BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" python3 - <<'PY'
+          import datetime, json, os, pathlib
+          work = os.environ["WORK"]
+          base = os.environ["BASE"]
+          platforms = {}
+          for p in pathlib.Path(work).iterdir():
+              if p.suffix != ".sig":
+                  continue
+              asset = p.name[: -len(".sig")]
+              sig = p.read_text().strip()
+              if asset.endswith(".app.tar.gz"):
+                  key = "darwin-aarch64" if "aarch64" in asset else "darwin-x86_64"
+              elif asset.endswith(".exe") or asset.endswith(".msi"):
+                  key = "windows-x86_64"
+              else:
+                  continue
+              platforms[key] = {"signature": sig, "url": f"{base}/{asset}"}
+          if not platforms:
+              raise SystemExit("release 里没有找到 .sig，latest.json 不生成")
+          doc = {
+              "version": os.environ["VERSION"],
+              "notes": "知识小助桌面端更新",
+              "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": platforms,
+          }
+          pathlib.Path(work, "latest.json").write_text(json.dumps(doc, ensure_ascii=False, indent=2))
+          print(json.dumps(doc, ensure_ascii=False, indent=2))
+          PY
+          gh release upload "$TAG" "$work/latest.json" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "=== release 资产 ==="
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
