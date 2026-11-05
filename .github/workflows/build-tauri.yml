@@ -21,8 +21,12 @@ jobs:
         include:
           - platform: "windows-latest"
             name: "windows"
+            args: ""
+          # macOS 必须显式带上 app target：只出 dmg 时 Tauri 不会生成 .app.tar.gz，
+          # 自动更新就没有可分发的包（latest.json 也会缺 darwin 平台）。
           - platform: "macos-latest"
             name: "macos"
+            args: "--bundles app,dmg"
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -40,12 +44,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
+        shell: bash
         run: |
           cd tauri-app
           npm install
 
       # 前端语法自检放在编译 Rust 之前：语法错立刻 fail，不用等十几分钟的 release 构建
       - name: Check frontend syntax
+        shell: bash
         run: |
           cd tauri-app
           npm run check
@@ -53,13 +59,17 @@ jobs:
       # 上传链路的参数解析/状态统计有单测兜底：serde 字段名写错不会报错，
       # 只会静默变成空值（v0.8.10 的 window_label 事故就是这么来的）
       - name: Run Rust tests
+        shell: bash
         run: |
           cd tauri-app/src-tauri
           cargo test --quiet
 
       # 自动更新的包必须签名，没有私钥 tauri 会直接报错。
       # 提前一步检查，省得等十几分钟编译完才失败。
+      # 注意必须指定 bash：Windows runner 默认 pwsh，`[ -z "$KEY" ]` 会直接语法错误，
+      # 表现为「只有 windows job 在这一步失败」，看着像 secret 没配。
       - name: Check updater signing key
+        shell: bash
         env:
           KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
@@ -78,6 +88,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: "./tauri-app"
+          args: ${{ matrix.args }}
           tagName: ${{ github.ref_name != 'main' && github.ref_name || inputs.version || 'v0.8.17' }}
           releaseName: "知识小助 ${{ github.ref_name != 'main' && github.ref_name || inputs.version || 'v0.8.17' }}"
           releaseBody: "华夏国数知识小助桌面端最新发布包。"
