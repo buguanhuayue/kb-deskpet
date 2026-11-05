@@ -212,6 +212,8 @@
   <div id="toast" class="toast hidden"></div>
 </div>
 <script src="/js/tauri-bridge.js"></script>
+<!-- Markdown 渲染（纯函数，panel.js 里解构 mdToHtml）必须在 panel.js 之前加载 -->
+<script src="/js/md.js"></script>
 <script src="/js/panel.js"></script>
 </body>
 </html>

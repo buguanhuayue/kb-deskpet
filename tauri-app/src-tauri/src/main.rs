@@ -86,9 +86,24 @@ fn start_dragging(app: AppHandle, window_label: Option<String>) -> Result<(), St
     Ok(())
 }
 
+/// 把前端事件广播给**其它**窗口。
+/// origin 是发送方窗口 label：app.emit 会连发送方一起投递，前端再监听同一事件就会处理两遍
+/// （现象：流式回答每个分片拼两次、上传进度重复刷新）。带上 origin 就用 emit_filter 跳过它。
 #[tauri::command]
-fn emit_event(app: AppHandle, event: String, payload: serde_json::Value) -> Result<(), String> {
-    app.emit(&event, payload).map_err(|e| e.to_string())
+fn emit_event(
+    app: AppHandle,
+    event: String,
+    payload: serde_json::Value,
+    origin: Option<String>,
+) -> Result<(), String> {
+    match origin.filter(|l| !l.is_empty()) {
+        Some(from) => app
+            .emit_filter(&event, payload, |target| {
+                !matches!(target, tauri::EventTarget::WebviewWindow { label } if *label == from)
+            })
+            .map_err(|e| e.to_string()),
+        None => app.emit(&event, payload).map_err(|e| e.to_string()),
+    }
 }
 
 #[tauri::command]

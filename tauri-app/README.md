@@ -24,12 +24,34 @@ Vite 的 `root` 是 `src`，`publicDir` 默认就是 `src/public`，两条路径
 ## 改完必须跑
 
 ```bash
-npm run check   # 语法自检：任意一个脚本 SyntaxError 直接失败
+npm run check   # 语法自检 + Markdown 安全回归（任意一项失败直接退出非 0）
 npm run build   # build 前会自动跑 check
 npm run tauri dev
 ```
 
 `check` 已经接进 CI（`.github/workflows/build-tauri.yml`），语法错不会再有安装包发出去。
+
+## 两条不能破的安全约定
+
+**1）Markdown 渲染只走 `src/public/js/md.js`**
+
+模型输出和知识库原文都是不可信内容，渲染前**整篇转义**，且 `escapeHtml` 必须转义引号
+（`"` `'`）——链接地址要拼进 `href="..."`，只转 `& < >` 的话
+`[点我](https://a.test/"onmouseover="alert(1))` 会闭合属性并注入事件（`csp: null` 的内联 handler 直接执行，
+能读走 localStorage 里的 token）。链接只放行 `http/https`。
+
+- `md.js` 是纯函数（不碰 DOM），`scripts/test-md.mjs` 直接 `require` 它做回归：
+  断言输出里每个标签都是合法属性结构、没有 `on*`/`srcdoc`、且正常 Markdown 不被破坏。
+- `panel.html` 里 `md.js` 必须排在 `panel.js` **之前**（`panel.js` 顶部解构 `mdToHtml`）。
+
+**2）跨窗口事件走 `broadcast`，本窗口自产自销走 `emitLocal`**
+
+`app.emit` 会广播给所有窗口**包括发送方**，同窗口再监听一次就会把同一个事件处理两遍
+（现象：流式回答每个分片拼两次、正文整段重复）。所以：
+
+- `broadcast()` 会带上 `origin: SELF_LABEL`，Rust `emit_event` 用 `emit_filter` 跳过发送方窗口；
+- 本窗口产生、本窗口消费的事件（`chat:event` 流式分片）只用 `emitLocal()`，
+  桌宠窗口不监听这些事件，没必要绕回 Rust。
 
 ## 上传链路
 

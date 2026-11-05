@@ -69,13 +69,37 @@
     if (set) set.forEach(cb => { try { cb(payload); } catch (e) { console.error(e); } });
   };
 
+  // 当前窗口的 label（'panel' / 'pet'），emit_event 用它告诉 Rust「别回传给我自己」
+  const SELF_LABEL = (() => {
+    try {
+      const w = window.__TAURI__?.window?.getCurrentWindow?.();
+      if (w && w.label) return w.label;
+    } catch {}
+    try {
+      return window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label || '';
+    } catch {}
+    return '';
+  })();
+
   const broadcast = (evt, payload) => {
     emit(evt, payload);
-    invoke('emit_event', { event: evt, payload });
+    // origin 让 Rust 侧用 emit_filter 跳过发送方窗口：app.emit 是广播给所有窗口（含自己），
+    // 同窗口再触发一次 listen 就会把同一个事件处理两遍。
+    invoke('emit_event', { event: evt, payload, origin: SELF_LABEL });
     if (bus) {
       try { bus.postMessage({ evt, payload }); } catch {}
     }
   };
+
+  // 只在本窗口（以及浏览器预览的 BroadcastChannel）派发，不绕回 Rust 广播。
+  // 用于本窗口产生、本窗口消费的事件（如 chat 流式分片）：桌宠窗口不监听这些事件。
+  const emitLocal = (evt, payload) => {
+    emit(evt, payload);
+    if (bus) {
+      try { bus.postMessage({ evt, payload }); } catch {}
+    }
+  };
+
 
   if (bus) {
     bus.onmessage = (e) => {
@@ -419,7 +443,7 @@
       }
 
       const url = `${base}/knowledge-chat/${encodeURIComponent(activeSessionId)}`;
-      broadcast('chat:event', { response_type: 'agent_query' });
+      emitLocal('chat:event', { response_type: 'agent_query' });
 
       try {
         const poolIds = (cachedAskKbIds && cachedAskKbIds.length) ? cachedAskKbIds : (cfg.kbId ? [cfg.kbId] : []);
@@ -461,16 +485,16 @@
             if (!line.startsWith('data:')) continue;
             try {
               const ev = JSON.parse(line.slice(5).trim());
-              broadcast('chat:event', ev);
+              emitLocal('chat:event', ev);
             } catch {}
           }
         }
 
-        broadcast('chat:event', { response_type: 'complete' });
+        emitLocal('chat:event', { response_type: 'complete' });
         if (activeSessionId) localStorage.setItem('deskpet_last_session', activeSessionId);
         return { ok: true, sessionId: activeSessionId };
       } catch (e) {
-        broadcast('chat:event', { response_type: 'error', content: e.message });
+        emitLocal('chat:event', { response_type: 'error', content: e.message });
         return { error: e.message };
       }
     },
