@@ -1,6 +1,6 @@
 {
   "productName": "知识小助",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "identifier": "com.company.deskpet",
   "build": {
     "beforeDevCommand": "npm run dev",
