@@ -93,6 +93,8 @@
     eventMod.listen('upload:update', (e) => emit('upload:update', e.payload));
     // 自动更新的下载进度由 Rust 侧按 120ms 节流后发过来
     eventMod.listen('update:progress', (e) => emit('update:progress', e.payload));
+    // 启动自检的结论（面板加载晚于自检完成时靠这条补上）
+    eventMod.listen('update:checked', (e) => emit('update:checked', e.payload));
     eventMod.listen('toast', (e) => emit('toast', e.payload));
     eventMod.listen('panel:shown', (e) => emit('panel:shown', e.payload));
     // 桌宠窗口收到的拖放结果统一转给面板处理（上传只有一个出口）
@@ -793,6 +795,13 @@
       const r = await invoke('update_check');
       return r || { ok: false, error: '更新服务不可用' };
     },
+    // 启动自检的结论（Rust 在 setup 里查完缓存，面板加载时直接取，不重新联网）
+    updateAutoResult: async () => {
+      if (!IS_TAURI) return { pending: false, result: null };
+      const r = await invoke('update_auto_result');
+      return r || { pending: false, result: null };
+    },
+    onUpdateChecked: (cb) => on('update:checked', cb),
     updateInstall: async () => {
       if (!IS_TAURI) return { ok: false, error: '只有桌面端支持自动更新' };
       const r = await invoke('update_install');

@@ -524,13 +524,13 @@ async function initSessions() {
 
 async function init() {
   initVersion()
+  // 每次启动自动查一次更新，与登录态无关；结论由 Rust 侧缓存，这里只取
+  autoUpdateOnLaunch()
   state = await window.pet.state()
   el.inServer.value = state.serverUrl || 'https://knowledge.xinyeonline.com.cn'
   el.inEmail.value = state.email || ''
   if (state.loggedIn) {
     await enterMain()
-    // 启动后静默探一次新版本：只在按钮上点个红点，不弹窗不打扰
-    setTimeout(() => checkUpdate({ silent: true }), 2500)
   } else {
     show('login')
     el.inEmail.focus()
@@ -1855,9 +1855,15 @@ async function checkUpdate({ silent = false } = {}) {
   UPD.state = 'checking'
   updLabel(silent ? '检查更新' : '检查中…', { busy: !silent })
   const r = await window.pet.updateCheck()
+  applyUpdateResult(r, { silent })
+}
+
+// 收到检查结论后统一在这里改 UI：手动点和启动自检走同一条路，避免两边文案不一样
+function applyUpdateResult(r, { silent = false } = {}) {
   if (!r || r.ok === false) {
     UPD.state = 'idle'
     updLabel('检查更新')
+    // 静默自检失败不打扰：公司网拦 github 是常态，按钮还在，用户想查可以自己点
     if (!silent) toast((r && r.error) || '检查更新失败', 'warn')
     return
   }
@@ -1872,7 +1878,27 @@ async function checkUpdate({ silent = false } = {}) {
   UPD.canInstall = r.canInstall !== false
   UPD.state = 'available'
   updLabel('有新版本', { dot: true })
-  openUpdateModal()
+  // 启动自检只在按钮上点红点，不弹卡片打断用户；手动点才展开详情
+  if (!silent) openUpdateModal()
+  // 面板正好开着的时候轻声说一句，关着的时候什么都不做（下次打开能看到红点）
+  else if (!document.hidden) toast(`发现新版本 v${info.version || ''}，点左下角「检查更新」`)
+}
+
+// 启动自检：真正的检查在 Rust 的 setup 里（隐藏窗口会挂起 setTimeout，前端定时器靠不住），
+// 这里只是把结论取回来。自检还没跑完就隔一会儿再取，最多等 10 秒。
+async function autoUpdateOnLaunch() {
+  if (UPD.state !== 'idle') return
+  for (let i = 0; i < 4; i++) {
+    let r = null
+    try {
+      r = await window.pet.updateAutoResult()
+    } catch {}
+    if (r && !r.pending) {
+      if (r.result) applyUpdateResult(r.result, { silent: true })
+      return
+    }
+    await new Promise((res) => setTimeout(res, 2500))
+  }
 }
 
 async function doInstall() {
@@ -1933,6 +1959,11 @@ window.pet.onUpdateProgress((p) => {
     el.updGo.textContent = `下载中 ${fmtMB(done)}`
   }
   if (p.finished) el.updTip.textContent = '下载完成，正在安装…'
+})
+
+// 自检在面板 JS 加载完之后才有结论时，靠这条事件把结果补上
+window.pet.onUpdateChecked((r) => {
+  if (UPD.state === 'idle') applyUpdateResult(r, { silent: true })
 })
 
 el.btnUpdate.addEventListener('click', () => {

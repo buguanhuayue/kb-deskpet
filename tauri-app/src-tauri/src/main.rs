@@ -104,6 +104,7 @@ fn main() {
         // 「选文件 / 选文件夹」用系统对话框：webview 的 input[type=file] 拿不到绝对路径
         .plugin(tauri_plugin_dialog::init())
         .manage(upload::UploadState::new())
+        .manage(update::UpdateCache::default())
         .invoke_handler(tauri::generate_handler![
             show_panel,
             hide_panel,
@@ -122,6 +123,7 @@ fn main() {
             upload::pick_paths,
             update::app_version,
             update::update_check,
+            update::update_auto_result,
             update::update_install,
             update::update_restart
         ])
@@ -148,6 +150,11 @@ fn main() {
             if let Some(panel) = app.get_webview_window("panel") {
                 let _ = panel.set_always_on_top(false);
             }
+
+            // 每次启动自动查一次更新。放在 Rust 而不是前端定时器：面板窗口是隐藏创建
+            // 的，隐藏时 WKWebView 会挂起 setTimeout，「启动后 2.5 秒检查」实际要等
+            // 用户第一次点开面板才跑，等于没检查。
+            update::auto_check_on_startup(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

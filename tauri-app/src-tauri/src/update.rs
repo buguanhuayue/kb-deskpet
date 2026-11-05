@@ -12,8 +12,9 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Serialize)]
@@ -29,6 +30,32 @@ pub struct UpdateInfo {
 
 /// 正在下载/安装时挡住重复点击（下载中再点一次会起第二个下载任务）
 static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// 启动自检的结果缓存。
+///
+/// 为什么要有它：面板窗口是 `visible: false` 创建的，隐藏状态下 WKWebView 会把
+/// setTimeout 挂起，所以「前端启动 2.5 秒后查一次」实际上要等用户第一次点开面板
+/// 才会执行——等于没在启动时检查。改成 Rust 在 setup 里查，结果存这里：
+/// 面板一加载就能直接读到，不必依赖定时器和事件时序。
+#[derive(Default)]
+pub struct UpdateCache(Mutex<CacheInner>);
+
+#[derive(Default)]
+struct CacheInner {
+    /// 自检是否已有结论（成功或失败都算，避免重复请求 GitHub）
+    done: bool,
+    /// 自检的返回值，形状同 update_check 命令
+    result: Option<Value>,
+}
+
+fn cache_store(app: &AppHandle, result: &Value) {
+    if let Some(cache) = app.try_state::<UpdateCache>() {
+        if let Ok(mut inner) = cache.0.lock() {
+            inner.done = true;
+            inner.result = Some(result.clone());
+        }
+    }
+}
 
 fn version_of(app: &AppHandle) -> String {
     app.package_info().version.to_string()
@@ -81,10 +108,17 @@ pub fn app_version(app: AppHandle) -> String {
 
 #[tauri::command]
 pub async fn update_check(app: AppHandle) -> Value {
+    let result = check_inner(&app).await;
+    cache_store(&app, &result);
+    result
+}
+
+/// 真正干活的检查逻辑：手动点按钮和启动自检共用一份，避免两处行为不一致
+async fn check_inner(app: &AppHandle) -> Value {
     let updater = match app.updater() {
         Ok(u) => u,
         Err(e) => {
-            return json!({ "ok": false, "error": explain(&e.to_string()), "current": version_of(&app) })
+            return json!({ "ok": false, "error": explain(&e.to_string()), "current": version_of(app) })
         }
     };
 
@@ -107,11 +141,36 @@ pub async fn update_check(app: AppHandle) -> Value {
         }
         Ok(None) => json!({
             "ok": true,
-            "info": { "hasUpdate": false, "current": version_of(&app) },
+            "info": { "hasUpdate": false, "current": version_of(app) },
             "canInstall": true,
             "canAutoRestart": cfg!(target_os = "macos")
         }),
-        Err(e) => json!({ "ok": false, "error": explain(&e.to_string()), "current": version_of(&app) }),
+        Err(e) => json!({ "ok": false, "error": explain(&e.to_string()), "current": version_of(app) }),
+    }
+}
+
+/// 启动自检：`setup` 里调用一次，三秒后（等窗口和网络栈就绪）查一遍，
+/// 结果写进 UpdateCache 并广播 `update:checked`。
+/// 失败也照样缓存，免得面板每次打开都重新打一遍 GitHub。
+pub fn auto_check_on_startup(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let result = check_inner(&app).await;
+        cache_store(&app, &result);
+        let _ = app.emit("update:checked", &result);
+    });
+}
+
+/// 面板加载时来取启动自检的结论。
+/// `pending = true` 表示自检还在跑（或还没开始），前端稍后再取一次。
+#[tauri::command]
+pub fn update_auto_result(app: AppHandle) -> Value {
+    match app.try_state::<UpdateCache>() {
+        Some(cache) => match cache.0.lock() {
+            Ok(inner) => json!({ "pending": !inner.done, "result": inner.result.clone() }),
+            Err(_) => json!({ "pending": true, "result": Value::Null }),
+        },
+        None => json!({ "pending": true, "result": Value::Null }),
     }
 }
 
@@ -203,5 +262,33 @@ mod tests {
     fn explain_keeps_unknown_error_visible() {
         let msg = explain("weird failure");
         assert!(msg.starts_with("更新失败：weird failure"), "实际：{msg}");
+    }
+
+    /// 前端靠 info.hasUpdate / info.version 判断要不要点红点，
+    /// 字段名一旦从 camelCase 变掉，红点会静默不出现——用测试钉住。
+    #[test]
+    fn update_info_serializes_camel_case() {
+        let info = UpdateInfo {
+            has_update: true,
+            current: "0.8.17".into(),
+            version: "0.8.18".into(),
+            notes: "修复若干问题".into(),
+            date: Some("2026-11-05".into()),
+            target: "darwin-aarch64".into(),
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["hasUpdate"], true);
+        assert_eq!(v["current"], "0.8.17");
+        assert_eq!(v["version"], "0.8.18");
+        assert!(v.get("has_update").is_none(), "不应该出现 snake_case 字段");
+    }
+
+    /// 缓存还没写时，面板应该被告知「还在查」，而不是拿到 null 当成「没有更新」
+    #[test]
+    fn cache_defaults_to_pending() {
+        let cache = UpdateCache::default();
+        let inner = cache.0.lock().unwrap();
+        assert!(!inner.done);
+        assert!(inner.result.is_none());
     }
 }

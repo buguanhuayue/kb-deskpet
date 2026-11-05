@@ -53,7 +53,11 @@ npm run tauri dev
 
 ## 自动更新
 
-- 面板左下角「v0.8.x · 检查更新」：启动后静默查一次（只在按钮上点红点），也可以手点。
+- 面板左下角「v0.8.x · 检查更新」：**每次启动都会自动查一次**（只在按钮上点红点 + 面板开着时一句轻提示），也可以手点。
+  - 自检放在 Rust 的 `setup` 里（`update::auto_check_on_startup`），不是前端定时器：面板窗口是
+    `visible: false` 创建的，隐藏时 WKWebView 会挂起 `setTimeout`，前端「启动后 2.5 秒查一次」
+    实际要等用户第一次点开面板才跑，等于没检查。结论缓存在 `UpdateCache`，面板加载后调
+    `update_auto_result` 直接取，另外 Rust 会广播 `update:checked` 兜住「面板加载晚于自检」。
 - 链路：`tauri-plugin-updater` 读 release 里的 `latest.json` → 比对版本 → 下载 → 校验签名 →
   替换安装 → 面板提示「重启并安装」（Windows 上安装器会自己接管并重开应用）。
 - 签名是强制的，关不掉：
