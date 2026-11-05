@@ -91,6 +91,8 @@
     eventMod.listen('pet:state', (e) => emit('pet:state', e.payload));
     eventMod.listen('chat:event', (e) => emit('chat:event', e.payload));
     eventMod.listen('upload:update', (e) => emit('upload:update', e.payload));
+    // 自动更新的下载进度由 Rust 侧按 120ms 节流后发过来
+    eventMod.listen('update:progress', (e) => emit('update:progress', e.payload));
     eventMod.listen('toast', (e) => emit('toast', e.payload));
     eventMod.listen('panel:shown', (e) => emit('panel:shown', e.payload));
     // 桌宠窗口收到的拖放结果统一转给面板处理（上传只有一个出口）
@@ -778,6 +780,28 @@
     },
 
     openLocalNetworkSettings: () => ({ ok: true }),
+
+    /* ---------------- 自动更新 ----------------
+       校验、下载、替换包都在 Rust 侧（src-tauri/src/update.rs），
+       这里只负责把状态和进度转给面板。 */
+    appVersion: async () => {
+      const v = await invoke('app_version');
+      return typeof v === 'string' ? v : '';
+    },
+    updateCheck: async () => {
+      if (!IS_TAURI) return { ok: true, info: { hasUpdate: false }, canInstall: false, canAutoRestart: false };
+      const r = await invoke('update_check');
+      return r || { ok: false, error: '更新服务不可用' };
+    },
+    updateInstall: async () => {
+      if (!IS_TAURI) return { ok: false, error: '只有桌面端支持自动更新' };
+      const r = await invoke('update_install');
+      return r || { ok: false, error: '更新服务不可用' };
+    },
+    updateRestart: async () => {
+      if (IS_TAURI) await invoke('update_restart');
+    },
+    onUpdateProgress: (cb) => on('update:progress', cb),
 
     // 存入面板文件拾取
     pickFiles: () => pet.storePick('files'),

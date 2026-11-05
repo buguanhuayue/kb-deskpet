@@ -48,6 +48,19 @@ const el = {
   sessionEmpty: $('sessionEmpty'),
   sideUser: $('sideUser'),
   sideTenant: $('sideTenant'),
+  appVer: $('appVer'),
+  btnUpdate: $('btnUpdate'),
+  updLabel: $('updLabel'),
+  updDot: $('updDot'),
+  updModal: $('updModal'),
+  updTitle: $('updTitle'),
+  updMeta: $('updMeta'),
+  updNotes: $('updNotes'),
+  updBarWrap: $('updBarWrap'),
+  updBar: $('updBar'),
+  updTip: $('updTip'),
+  updGo: $('updGo'),
+  updLater: $('updLater'),
   sessionMenu: $('sessionMenu'),
   confirmModal: $('confirmModal'),
   confirmTitle: $('confirmTitle'),
@@ -510,11 +523,14 @@ async function initSessions() {
 /* ---------------- 启动 ---------------- */
 
 async function init() {
+  initVersion()
   state = await window.pet.state()
   el.inServer.value = state.serverUrl || 'https://knowledge.xinyeonline.com.cn'
   el.inEmail.value = state.email || ''
   if (state.loggedIn) {
     await enterMain()
+    // 启动后静默探一次新版本：只在按钮上点个红点，不弹窗不打扰
+    setTimeout(() => checkUpdate({ silent: true }), 2500)
   } else {
     show('login')
     el.inEmail.focus()
@@ -1777,6 +1793,168 @@ document.addEventListener('drop', async (e) => {
 
 // 从访达/桌面拖进来的文件不弹浏览器默认行为
 document.addEventListener('dragover', (e) => e.preventDefault())
+
+/* ---------------- 自动更新 ---------------- */
+
+// 状态机：idle → checking → (uptodate | available) → downloading → ready → restarting
+const UPD = { state: 'idle', info: null, canInstall: true, total: 0 }
+
+function updLabel(text, { dot = false, busy = false } = {}) {
+  if (!el.updLabel) return
+  el.updLabel.textContent = text
+  el.btnUpdate.disabled = busy
+  el.btnUpdate.classList.toggle('busy', busy)
+  el.updDot?.classList.toggle('hidden', !dot)
+}
+
+function closeUpdate() {
+  el.updModal.classList.add('hidden')
+}
+
+async function initVersion() {
+  try {
+    const v = await window.pet.appVersion()
+    if (v) el.appVer.textContent = `v${v}`
+  } catch {}
+}
+
+function fmtMB(n) {
+  const v = Number(n) || 0
+  return v > 0 ? `${(v / 1024 / 1024).toFixed(1)} MB` : ''
+}
+
+function openUpdateModal() {
+  const info = UPD.info || {}
+  el.updTitle.textContent = `发现新版本 v${info.version || ''}`
+  const bits = []
+  if (info.current) bits.push(`当前 v${info.current}`)
+  if (info.date) bits.push(String(info.date).slice(0, 10))
+  el.updMeta.textContent = bits.join(' · ')
+  const notes = String(info.notes || '').trim()
+  el.updNotes.textContent = notes
+  el.updNotes.classList.toggle('hidden', !notes)
+  el.updBarWrap.classList.add('hidden')
+  el.updBar.style.width = '0%'
+  el.updGo.disabled = !UPD.canInstall
+  el.updGo.textContent = '立即更新'
+  el.updLater.disabled = false
+  el.updLater.textContent = '稍后'
+  const win = /windows/i.test(String(info.target || ''))
+  if (!UPD.canInstall) {
+    el.updTip.textContent = '当前程序不在「应用程序」文件夹里，没法原地替换。先把「知识小助」拖进去，再打开它更新。'
+  } else if (win) {
+    el.updTip.textContent = '开始安装后应用会自动退出，装完会自己重新打开。'
+  } else {
+    el.updTip.textContent = '下载完会提示重启，重启后就是新版本。'
+  }
+  el.updModal.classList.remove('hidden')
+}
+
+async function checkUpdate({ silent = false } = {}) {
+  if (UPD.state === 'checking' || UPD.state === 'downloading' || UPD.state === 'restarting') return
+  UPD.state = 'checking'
+  updLabel(silent ? '检查更新' : '检查中…', { busy: !silent })
+  const r = await window.pet.updateCheck()
+  if (!r || r.ok === false) {
+    UPD.state = 'idle'
+    updLabel('检查更新')
+    if (!silent) toast((r && r.error) || '检查更新失败', 'warn')
+    return
+  }
+  const info = r.info || {}
+  if (!info.hasUpdate) {
+    UPD.state = 'idle'
+    updLabel('检查更新')
+    if (!silent) toast(`已是最新版本${info.current ? ' v' + info.current : ''}`)
+    return
+  }
+  UPD.info = info
+  UPD.canInstall = r.canInstall !== false
+  UPD.state = 'available'
+  updLabel('有新版本', { dot: true })
+  openUpdateModal()
+}
+
+async function doInstall() {
+  if (UPD.state === 'downloading' || UPD.state === 'restarting') return
+  UPD.state = 'downloading'
+  UPD.total = 0
+  el.updGo.disabled = true
+  el.updGo.textContent = '下载中…'
+  el.updLater.disabled = true
+  el.updLater.textContent = '更新中…'
+  el.updBarWrap.classList.remove('hidden')
+  el.updBar.style.width = '0%'
+  el.updTip.textContent = '正在下载更新包…'
+  updLabel('下载中', { busy: true })
+
+  const r = await window.pet.updateInstall()
+  if (!r || r.ok === false) {
+    UPD.state = 'available'
+    updLabel('检查更新')
+    el.updGo.disabled = !UPD.canInstall
+    el.updGo.textContent = '重试'
+    el.updLater.disabled = false
+    el.updLater.textContent = '稍后'
+    el.updBarWrap.classList.add('hidden')
+    el.updTip.textContent = (r && r.error) || '更新失败'
+    return
+  }
+  // Windows 上安装器会把应用接管走，一般走不到这里；macOS 需要用户点重启
+  UPD.state = 'ready'
+  updLabel('待重启')
+  el.updTitle.textContent = '更新已下载'
+  el.updMeta.textContent = `重启后生效 · v${r.version || UPD.info?.version || ''}`
+  el.updBar.style.width = '100%'
+  el.updTip.textContent = '重启后会运行新版本。'
+  el.updGo.disabled = false
+  el.updGo.textContent = '重启并安装'
+  el.updLater.disabled = false
+  el.updLater.textContent = '稍后'
+}
+
+async function doRestart() {
+  UPD.state = 'restarting'
+  el.updGo.disabled = true
+  el.updGo.textContent = '正在重启…'
+  await window.pet.updateRestart()
+}
+
+window.pet.onUpdateProgress((p) => {
+  if (!p || UPD.state !== 'downloading') return
+  const total = Number(p.total) || 0
+  const done = Number(p.downloaded) || 0
+  if (total) {
+    UPD.total = total
+    const pct = Math.max(1, Math.min(100, Math.round((done / total) * 100)))
+    el.updBar.style.width = pct + '%'
+    el.updGo.textContent = `下载中 ${pct}%`
+  } else {
+    el.updGo.textContent = `下载中 ${fmtMB(done)}`
+  }
+  if (p.finished) el.updTip.textContent = '下载完成，正在安装…'
+})
+
+el.btnUpdate.addEventListener('click', () => {
+  if (UPD.state === 'ready') {
+    el.updModal.classList.remove('hidden')
+    return
+  }
+  if (UPD.state === 'available') {
+    openUpdateModal()
+    return
+  }
+  checkUpdate()
+})
+el.updGo.addEventListener('click', () => {
+  if (UPD.state === 'downloading') return
+  if (UPD.state === 'ready') return doRestart()
+  doInstall()
+})
+el.updLater.addEventListener('click', closeUpdate)
+el.updModal.addEventListener('click', (e) => {
+  if (e.target === el.updModal && UPD.state !== 'downloading') closeUpdate()
+})
 
 /* ---------------- SSE 事件 ---------------- */
 

@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod update;
 mod upload;
 
 use tauri::{AppHandle, Emitter, LogicalPosition, Manager, PhysicalPosition, Position};
@@ -98,6 +99,7 @@ fn app_quit(app: AppHandle) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         // 「选文件 / 选文件夹」用系统对话框：webview 的 input[type=file] 拿不到绝对路径
         .plugin(tauri_plugin_dialog::init())
@@ -117,7 +119,11 @@ fn main() {
             upload::upload_retry,
             upload::upload_set_cfg,
             upload::describe_paths,
-            upload::pick_paths
+            upload::pick_paths,
+            update::app_version,
+            update::update_check,
+            update::update_install,
+            update::update_restart
         ])
         .setup(|app| {
             if let Some(pet) = app.get_webview_window("pet") {

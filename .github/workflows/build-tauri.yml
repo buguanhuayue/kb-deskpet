@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version tag (e.g. v0.8.16)"
+        description: "Release version tag (e.g. v0.8.17)"
         required: false
-        default: "v0.8.16"
+        default: "v0.8.17"
 
 jobs:
   release:
@@ -57,14 +57,29 @@ jobs:
           cd tauri-app/src-tauri
           cargo test --quiet
 
+      # 自动更新的包必须签名，没有私钥 tauri 会直接报错。
+      # 提前一步检查，省得等十几分钟编译完才失败。
+      - name: Check updater signing key
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::缺少 TAURI_SIGNING_PRIVATE_KEY。到仓库 Settings → Secrets and variables → Actions 添加："
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY = ~/.tauri/kb-deskpet.key 的内容"
+            exit 1
+          fi
+          echo "签名密钥已配置（长度 ${#KEY}）"
+
       - name: Build Tauri Desktop App
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: "./tauri-app"
-          tagName: ${{ github.ref_name != 'main' && github.ref_name || inputs.version || 'v0.8.16' }}
-          releaseName: "知识小助 ${{ github.ref_name != 'main' && github.ref_name || inputs.version || 'v0.8.16' }}"
+          tagName: ${{ github.ref_name != 'main' && github.ref_name || inputs.version || 'v0.8.17' }}
+          releaseName: "知识小助 ${{ github.ref_name != 'main' && github.ref_name || inputs.version || 'v0.8.17' }}"
           releaseBody: "华夏国数知识小助桌面端最新发布包。"
           releaseDraft: false
           prerelease: false
@@ -76,6 +91,9 @@ jobs:
           name: 知识小助-${{ matrix.name }}-build
           path: |
             tauri-app/src-tauri/target/release/bundle/nsis/*.exe
+            tauri-app/src-tauri/target/release/bundle/nsis/*.sig
             tauri-app/src-tauri/target/release/bundle/dmg/*.dmg
             tauri-app/src-tauri/target/release/bundle/macos/*.app
+            tauri-app/src-tauri/target/release/bundle/macos/*.app.tar.gz
+            tauri-app/src-tauri/target/release/bundle/macos/*.sig
           if-no-files-found: warn

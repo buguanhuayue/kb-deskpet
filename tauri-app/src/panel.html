@@ -35,6 +35,12 @@
       <div class="side-foot">
         <div id="sideUser" class="side-user"></div>
         <div id="sideTenant" class="side-tenant"></div>
+        <div class="side-ver">
+          <span id="appVer" class="app-ver">v—</span>
+          <button id="btnUpdate" class="upd-btn" type="button">
+            <span id="updLabel">检查更新</span><i id="updDot" class="upd-dot hidden" aria-hidden="true"></i>
+          </button>
+        </div>
       </div>
     </aside>
 
@@ -183,6 +189,22 @@
       <div class="modal-foot">
         <button id="confirmCancel" class="ghost">取消</button>
         <button id="confirmOk" class="primary danger-solid">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="updModal" class="modal hidden">
+    <div class="modal-card upd-card">
+      <div class="modal-head" id="updTitle">发现新版本</div>
+      <div class="upd-body">
+        <div id="updMeta" class="upd-meta"></div>
+        <pre id="updNotes" class="upd-notes hidden"></pre>
+        <div id="updBarWrap" class="upd-bar-wrap hidden"><i id="updBar" class="upd-bar"></i></div>
+        <div id="updTip" class="upd-tip"></div>
+      </div>
+      <div class="modal-foot">
+        <button id="updLater" class="ghost">稍后</button>
+        <button id="updGo" class="primary">立即更新</button>
       </div>
     </div>
   </div>

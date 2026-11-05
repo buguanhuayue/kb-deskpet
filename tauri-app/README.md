@@ -51,10 +51,34 @@ npm run tauri dev
 - 「写一段文字」走 `POST /api/v1/knowledge-bases/{kb}/knowledge/manual`（实测 200，
   不强制 `X-Tenant-ID`，租户由 JWT 决定）。
 
+## 自动更新
+
+- 面板左下角「v0.8.x · 检查更新」：启动后静默查一次（只在按钮上点红点），也可以手点。
+- 链路：`tauri-plugin-updater` 读 release 里的 `latest.json` → 比对版本 → 下载 → 校验签名 →
+  替换安装 → 面板提示「重启并安装」（Windows 上安装器会自己接管并重开应用）。
+- 签名是强制的，关不掉：
+  - 公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`（可公开）
+  - 私钥在 `~/.tauri/kb-deskpet.key`，CI 用仓库 Secret `TAURI_SIGNING_PRIVATE_KEY`
+  - **私钥丢了 = 老用户再也收不到自动更新**，只能手动重装，务必备份
+- 第一次带更新的版本（0.8.17）还得手动装一次，之后才会自动更新。
+- 本地打包要带私钥，否则 `createUpdaterArtifacts` 会失败：
+
+```bash
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/kb-deskpet.key)"
+npm run tauri build
+```
+
+发版流程：改 `package.json` + `tauri.conf.json` 的版本号 → commit → `git tag vX.Y.Z` → push 标签。
+
 ## 已知限制
 
 - 上传进度只有阶段（上传中/解析中），没有百分比：reqwest 用整块 body 发送，拿不到细粒度进度。
 - 「解析超时」的条目会在队列里保留错误提示，但后端可能仍在处理，最终以网页端为准。
+- 自动更新依赖客户端能访问 `github.com`（`latest.json` 和安装包都在 Release 里）；
+  公司网络如果拦了 GitHub，检查更新会报「连不上更新服务器」。
+- App 未做 Apple 公证：更新包由 App 自己写入、不带 quarantine 属性，正常能直接启动；
+  万一被 Gatekeeper 拦下，`xattr -dr com.apple.quarantine /Applications/知识小助.app` 可解。
+- macOS 必须把 App 放在「应用程序」里才能自动更新——在 dmg 里直接运行会提示先拖进去。
 
 ## 已知实现细节
 
