@@ -1,89 +1,26 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
-
-static IS_ALIGNING: AtomicBool = AtomicBool::new(false);
-
-fn align_panel_to_pet(pet: &WebviewWindow, panel: &WebviewWindow, pet_pos: PhysicalPosition<i32>) {
-    if IS_ALIGNING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    if let (Ok(pet_size), Ok(panel_size)) = (pet.outer_size(), panel.outer_size()) {
-        let mut min_x = 0;
-        let mut max_x = 1920;
-        let mut min_y = 0;
-        let mut max_y = 1080;
-
-        if let Ok(monitors) = pet.available_monitors() {
-            for m in monitors {
-                let m_pos = m.position();
-                let m_size = m.size();
-                if pet_pos.x >= m_pos.x - 150
-                    && pet_pos.x < m_pos.x + m_size.width as i32 + 150
-                    && pet_pos.y >= m_pos.y - 150
-                    && pet_pos.y < m_pos.y + m_size.height as i32 + 150
-                {
-                    min_x = m_pos.x;
-                    max_x = m_pos.x + m_size.width as i32;
-                    min_y = m_pos.y;
-                    max_y = m_pos.y + m_size.height as i32;
-                    break;
-                }
-            }
-        }
-
-        let w = panel_size.width as i32;
-        let h = panel_size.height as i32;
-        let pw = pet_size.width as i32;
-        let ph = pet_size.height as i32;
-
-        let mut x = pet_pos.x + pw - w;
-        let mut y = pet_pos.y - h - 10;
-        if y < min_y + 10 {
-            y = pet_pos.y + ph + 10;
-        }
-        if y + h > max_y - 10 {
-            y = max_y - h - 10;
-        }
-        if x < min_x + 10 {
-            x = min_x + 10;
-        }
-        if x + w > max_x - 10 {
-            x = max_x - w - 10;
-        }
-
-        let _ = panel.set_position(PhysicalPosition::new(x, y));
-    }
-
-    IS_ALIGNING.store(false, Ordering::SeqCst);
-}
-
-fn align_pet_to_panel(panel: &WebviewWindow, pet: &WebviewWindow, panel_pos: PhysicalPosition<i32>) {
-    if IS_ALIGNING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    if let (Ok(pet_size), Ok(panel_size)) = (pet.outer_size(), panel.outer_size()) {
-        let w = panel_size.width as i32;
-        let h = panel_size.height as i32;
-        let pw = pet_size.width as i32;
-
-        let pet_x = panel_pos.x + w - pw;
-        let pet_y = panel_pos.y + h + 10;
-
-        let _ = pet.set_position(PhysicalPosition::new(pet_x, pet_y));
-    }
-
-    IS_ALIGNING.store(false, Ordering::SeqCst);
-}
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 
 #[tauri::command]
 fn show_panel(app: AppHandle) -> Result<(), String> {
-    if let (Some(pet), Some(panel)) = (app.get_webview_window("pet"), app.get_webview_window("panel")) {
-        if let Ok(pet_pos) = pet.outer_position() {
-            align_panel_to_pet(&pet, &panel, pet_pos);
+    if let Some(panel) = app.get_webview_window("panel") {
+        let is_vis = panel.is_visible().unwrap_or(false);
+        if !is_vis {
+            // 如果面板未显示，且尚未定位，给一个默认舒适位置（在主屏幕中央偏右）
+            if let Ok(Some(monitor)) = panel.primary_monitor() {
+                let screen_size = monitor.size();
+                if let Ok(panel_size) = panel.outer_size() {
+                    let w = panel_size.width as i32;
+                    let h = panel_size.height as i32;
+                    let sw = screen_size.width as i32;
+                    let sh = screen_size.height as i32;
+                    // 默认靠右侧居中摆放，与右下角宠物完全分离独立
+                    let x = (sw - w - 240).max(40);
+                    let y = ((sh - h) / 2).max(40);
+                    let _ = panel.set_position(PhysicalPosition::new(x, y));
+                }
+            }
         }
         let _ = panel.show();
         let _ = panel.set_focus();
@@ -145,39 +82,19 @@ fn main() {
         ])
         .setup(|app| {
             if let Some(pet) = app.get_webview_window("pet") {
-                // 初次启动定位在主屏幕右下角
+                // 初次启动将桌宠定位在主屏幕右下角安全可视区（避开任务栏）
                 if let Ok(Some(monitor)) = pet.primary_monitor() {
                     let screen_size = monitor.size();
-                    let x = screen_size.width as i32 - 220;
-                    let y = screen_size.height as i32 - 240;
+                    let x = screen_size.width as i32 - 210;
+                    let y = screen_size.height as i32 - 230;
                     let _ = pet.set_position(PhysicalPosition::new(x, y));
                 }
-
-                // 核心1：实时监听 pet 窗口的移动事件，让 panel 窗口实时吸附跟随！
-                let app_handle_for_pet = app.handle().clone();
-                let pet_clone = pet.clone();
-                pet.on_window_event(move |event| {
-                    if let tauri::WindowEvent::Moved(pet_pos) = event {
-                        if let Some(panel) = app_handle_for_pet.get_webview_window("panel") {
-                            if panel.is_visible().unwrap_or(false) {
-                                align_panel_to_pet(&pet_clone, &panel, *pet_pos);
-                            }
-                        }
-                    }
-                });
+                let _ = pet.set_always_on_top(true);
             }
 
             if let Some(panel) = app.get_webview_window("panel") {
-                // 核心2：实时监听 panel 窗口的移动事件，让 pet 桌宠窗口双向吸附跟随！
-                let app_handle_for_panel = app.handle().clone();
-                let panel_clone = panel.clone();
-                panel.on_window_event(move |event| {
-                    if let tauri::WindowEvent::Moved(panel_pos) = event {
-                        if let Some(pet) = app_handle_for_panel.get_webview_window("pet") {
-                            align_pet_to_panel(&panel_clone, &pet, *panel_pos);
-                        }
-                    }
-                });
+                // 窗口与宠物完全独立，面板不强制顶置，不随桌宠拖动而位移，桌宠也绝不随面板位移
+                let _ = panel.set_always_on_top(false);
             }
             Ok(())
         })

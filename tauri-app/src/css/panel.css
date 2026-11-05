@@ -68,7 +68,10 @@ html, body {
 .grow { flex: 1; }
 
 .icon-btn {
-  -webkit-app-region: no-drag;
+  -webkit-app-region: no-drag !important;
+  pointer-events: auto !important;
+  position: relative;
+  z-index: 5;
   width: 26px;
   height: 26px;
   border: 0;

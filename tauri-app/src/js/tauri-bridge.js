@@ -485,14 +485,27 @@
         const r = await apiRequest(`/messages/${encodeURIComponent(id)}/load?limit=60`);
         const rows = Array.isArray(r.data) ? r.data : (Array.isArray(r) ? r : []);
         const messages = rows
-          .filter(m => m && (m.role === 'user' || m.role === 'assistant'))
-          .map(m => ({
-            id: m.id,
-            role: m.role,
-            content: m.content || '',
-            refs: Array.isArray(m.knowledge_references) ? m.knowledge_references : [],
-            at: m.created_at || ''
-          }));
+          .map(m => {
+            if (!m) return null;
+            let role = m.role;
+            if (role === 'human') role = 'user';
+            if (role === 'ai') role = 'assistant';
+            if (role !== 'user' && role !== 'assistant') return null;
+            return {
+              id: m.id,
+              role,
+              content: m.content || '',
+              refs: Array.isArray(m.knowledge_references) ? m.knowledge_references : [],
+              at: m.created_at || ''
+            };
+          })
+          .filter(Boolean);
+
+        messages.sort((a, b) => {
+          const ta = a.at ? new Date(a.at).getTime() : 0;
+          const tb = b.at ? new Date(b.at).getTime() : 0;
+          return ta - tb;
+        });
 
         activeSessionId = id;
         localStorage.setItem('deskpet_last_session', id);

@@ -463,7 +463,7 @@ async function switchSession(id, { silent = false } = {}) {
     return
   }
   clearAttachments(true)
-  if (!silent && id === sessions.activeId) {
+  if (!silent && id === sessions.activeId && el.chat && el.chat.children.length > 0) {
     closeDrawerIfNarrow()
     return
   }
