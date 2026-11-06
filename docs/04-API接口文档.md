@@ -38,11 +38,19 @@ FastAPI 会把 `HTTPException` 的 detail 包在 `detail` 里，实际收到的�
 | 400 | `bad_visibility` | `visibility` 不是 private/dept/company | 检查参数 |
 | 400 | `empty` | `question` 或 `content` 为空 | 检查参数 |
 | 400 | `too_long` | 问题超过 1000 字 | 拆短问题 |
+| 400 | `bad_subject_type` | ACL 的 `subject_type` 不是 user/dept | 检查参数 |
+| 400 | `bad_uuid` | ACL 的 `subject_id` 不是合法 uuid | 检查参数 |
+| 400 | `bad_permission` | ACL 的 `permission` 不是 read | 检查参数 |
 | 401 | `no_token` | 缺少 Authorization 头 | 补 Token |
 | 401 | `bad_token` | Token 不存在 | 重新签发 |
+| 403 | `forbidden` | 已登录但无权操作（如非 owner 改 ACL） | 找文档所有者或管理员 |
 | 404 | `not_found` | 文档 ID 不存在 | 检查 doc_id |
+| 404 | `subject_not_found` | ACL 授权目标（用户/部门）不存在 | 检查 subject_id |
 | 413 | `too_large` | 文件超过 `MAX_UPLOAD_MB` | 压缩或调整上限 |
 | 415 | `unsupported` | 扩展名不在 pdf/txt/md/csv | 转换格式 |
+
+> `401` = 没登录（缺 Token / Token 无效）；`403` = 登录了但没这个权限。
+> 两者不要混用，前端据此决定是跳登录页还是提示"没权限"。
 
 ## 三、接口清单
 
@@ -53,6 +61,9 @@ FastAPI 会把 `HTTPException` 的 detail 包在 `detail` 里，实际收到的�
 | GET | `/api/me` | 当前用户信息 | 是 |
 | GET | `/api/documents` | 文档列表（最近 100） | 是 |
 | GET | `/api/documents/{doc_id}` | 单个文档详情 | 是 |
+| POST | `/api/documents/{doc_id}/acl` | 给某人/某部门显式授权该文档 | 是（owner / admin） |
+| DELETE | `/api/documents/{doc_id}/acl` | 撤销显式授权 | 是（owner / admin） |
+| GET | `/api/documents/{doc_id}/acl` | 列出该文档的显式授权 | 是（owner / admin） |
 | POST | `/api/ingest/file` | 上传文件入库 | 是 |
 | POST | `/api/ingest/text` | 纯文本入库 | 是 |
 | POST | `/api/query` | 问答（SSE 流式） | 是 |
@@ -148,7 +159,97 @@ P0 已知问题，见 [08](08-已知限制与风险.md#三安全相关的已知�
 
 ---
 
-## 八、POST /api/ingest/file
+## 八、ACL 显式授权（按人 / 按部门）
+
+三档可见性（private / dept / company）之外，还可以对**某个人**或**某个部门**
+做单文档的显式授权，授权后对方即可检索到该文档内容（FR-28）。
+
+三个端点都挂在 `/api/documents/{doc_id}/acl` 上，**只有该文档的 owner 或
+admin 角色的账号能调用**；其他人一律返回 `403 forbidden`。
+这是硬约束：`acl.subject_id` 没有外键约束，写入端必须自己把关，
+否则普通用户可以把自己塞进任意文档的授权名单里（自我提权）。
+
+| 方法 | 用途 | 请求体 |
+|---|---|---|
+| POST | 授权 | `{"subject_type":"user","subject_id":"<uuid>","permission":"read"}` |
+| DELETE | 撤销授权 | `{"subject_type":"user","subject_id":"<uuid>"}` |
+| GET | 列出该文档的授权记录 | 无 |
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `subject_type` | 是 | `user`（按人）或 `dept`（按部门），必须与 acl 表 CHECK 约束一致 |
+| `subject_id` | 是 | 目标用户或部门的 uuid，必须真实存在，否则 `404 subject_not_found` |
+| `permission` | 否 | 本版只支持 `read`，缺省即 `read`；其他值返回 `400 bad_permission` |
+
+### 授权（POST）
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"subject_type":"dept","subject_id":"b2c3...","permission":"read"}' \
+  http://127.0.0.1:9527/api/documents/175cf1f7-.../acl
+```
+
+```json
+{
+  "doc_id": "175cf1f7-...",
+  "subject_type": "dept",
+  "subject_id": "b2c3...",
+  "permission": "read"
+}
+```
+
+重复授权同一个人/部门是**幂等**的：不会报错，会把 permission 更新为新值。
+
+### 撤销授权（DELETE）
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"subject_type":"dept","subject_id":"b2c3..."}' \
+  http://127.0.0.1:9527/api/documents/175cf1f7-.../acl
+```
+
+```json
+{
+  "doc_id": "175cf1f7-...",
+  "subject_type": "dept",
+  "subject_id": "b2c3...",
+  "revoked": true
+}
+```
+
+撤销也是幂等的：本来就没有这条授权时同样返回成功（撤销是清理动作）。
+
+### 查看授权列表（GET）
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9527/api/documents/175cf1f7-.../acl
+```
+
+```json
+{
+  "doc_id": "175cf1f7-...",
+  "items": [
+    {"subject_type": "dept", "subject_id": "b2c3...", "permission": "read", "subject_name": "财务部"},
+    {"subject_type": "user", "subject_id": "d4e5...", "permission": "read", "subject_name": "张三"}
+  ]
+}
+```
+
+`subject_name` 是目标的用户名 / 部门名，方便前端直接展示；
+目标已被删除时为 `null`。
+
+### 生效条件与注意事项
+
+- 授权记录落在 `acl` 表，检索链路的可见性谓词（`search/sql.py::ACL`）会直接命中它
+  ——**不需要重新入库，也不需要改文档的 visibility**。
+- 授权只影响**检索可见性**；`GET /api/documents`（列表）仍按 owner / 同部门 / 非 private
+  的老口径返回，不含"靠 ACL 授权进来"的文档。
+- 撤销授权后，被授权方立即搜不到该文档（谓词在 SQL 里实时判定，无缓存）。
+- 本版只支持 `read`；`edit`（可写）语义尚未定义，传 `write` 会被 `400` 拒绝。
+
+---
+
+## 九、POST /api/ingest/file
 
 上传文件入库。`multipart/form-data`。
 
@@ -184,7 +285,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 
 ---
 
-## 九、POST /api/ingest/text
+## 十、POST /api/ingest/text
 
 纯文本入库，适合"随手记"场景。
 
@@ -206,7 +307,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 
 ---
 
-## 十、POST /api/query（SSE 流式）
+## 十一、POST /api/query（SSE 流式）
 
 问答主接口，返回 `text/event-stream`。
 
@@ -286,7 +387,7 @@ while (true) {
 
 ---
 
-## 十一、POST /api/search（只检索不生成）
+## 十二、POST /api/search（只检索不生成）
 
 调参与评测专用，返回结构与 `citations` 类似但含全部中间分数。
 
@@ -322,7 +423,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 
 ---
 
-## 十二、调用示例（完整一次）
+## 十三、调用示例（完整一次）
 
 ```bash
 TOKEN=9gDXhxOD81yF_Ng4YBVbzFRG86o2leMq

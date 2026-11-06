@@ -40,8 +40,10 @@ def _write_chunks(doc_id: str, batch, vecs: list[list[float]] | None) -> None:
                        to_tsvector('simple', %(tsvtext)s)
                 FROM documents d WHERE d.id = %(doc_id)s
                 ON CONFLICT (doc_id, seq) DO UPDATE
-                  SET text = EXCLUDED.text, embedding = EXCLUDED.embedding,
-                      tsv = EXCLUDED.tsv, embed_model = EXCLUDED.embed_model
+                  SET text = EXCLUDED.text, locator = EXCLUDED.locator,
+                      token_count = EXCLUDED.token_count,
+                      embedding = EXCLUDED.embedding, tsv = EXCLUDED.tsv,
+                      embed_model = EXCLUDED.embed_model
                 """,
                 [
                     {
