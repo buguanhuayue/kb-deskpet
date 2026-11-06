@@ -14,5 +14,13 @@ dependencies = [
   "pgvector>=0.3",
 ]
 
+[project.optional-dependencies]
+# 测试依赖单独成组：生产镜像 `pip install -e .` 不会带上它们。
+# 跑法见 tests/README.md —— `pip install -e ".[test]"` 后 `python3 -m pytest tests/ -v`
+test = [
+  "pytest>=8.0",
+  "pytest-mock>=3.14",
+]
+
 [tool.setuptools]
 packages = ["app"]
