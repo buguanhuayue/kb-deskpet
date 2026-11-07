@@ -1388,6 +1388,92 @@ function renderShelf() {
       : `将存入「${kbTargetName()}」`
 }
 
+/* ---------------- 上传结果跟踪 ----------------
+   uploadPaths 只是「入队」，真实上传与解析在 Rust 侧异步跑。早期拿到 queued 就
+   播报「已提交成功」，结果 403 全失败后聊天区还留着成功提示 —— 虚假播报。
+   现在按 upload_enqueue 返回的 ids 跟踪本批条目，全部落定后才汇总真实结果。 */
+const uploadBatches = new Map()
+let uploadBatchSeq = 0
+const UPLOAD_BATCH_TIMEOUT = 6 * 60 * 1000 // 服务端解析轮询上限 5 分钟，留 1 分钟余量
+
+function trackUploadBatch(ids, kb) {
+  if (!Array.isArray(ids) || !ids.length) return
+  const batchId = ++uploadBatchSeq
+  const batch = {
+    ids: new Set(ids),
+    kb,
+    ok: 0, exists: 0, failed: 0,
+    errors: [],
+    finished: false,
+    timer: null
+  }
+  uploadBatches.set(batchId, batch)
+  // 事件可能早于订阅到达（小文件秒传），先按队列快照对齐一次
+  window.pet.listUploads().then((list) => {
+    if (!uploadBatches.has(batchId)) return
+    for (const it of (list || [])) settleUploadItem(batchId, it)
+    checkUploadBatch(batchId)
+  }).catch(() => {})
+  batch.timer = setTimeout(() => finishUploadBatch(batchId, true), UPLOAD_BATCH_TIMEOUT)
+}
+
+function settleUploadItem(batchId, it) {
+  const b = uploadBatches.get(batchId)
+  if (!b || b.finished || !it || !b.ids.has(it.id)) return
+  const st = it.status
+  // 解析超过 5 分钟仍没落定：服务端只是慢，按成功计，别让汇总永远等不到
+  const slowParse = st === 'parsing' && Number(it.parseElapsed) >= 300
+  if (st === 'done' || slowParse) {
+    b.ok++
+    b.ids.delete(it.id)
+  } else if (st === 'exists') {
+    b.exists++
+    b.ids.delete(it.id)
+  } else if (st === 'failed') {
+    b.failed++
+    if (it.error) b.errors.push(it.error)
+    b.ids.delete(it.id)
+  }
+}
+
+function checkUploadBatch(batchId) {
+  const b = uploadBatches.get(batchId)
+  if (b && !b.finished && !b.ids.size) finishUploadBatch(batchId)
+}
+
+function finishUploadBatch(batchId, timedOut = false) {
+  const b = uploadBatches.get(batchId)
+  if (!b || b.finished) return
+  b.finished = true
+  if (b.timer) clearTimeout(b.timer)
+  uploadBatches.delete(batchId)
+  // 超时还没落定的算「仍在解析」，绝不谎报成功
+  const pending = b.ids.size
+  const parts = []
+  if (b.ok) parts.push(`成功 ${b.ok} 项`)
+  if (b.exists) parts.push(`${b.exists} 项库里已有`)
+  if (b.failed) parts.push(`失败 ${b.failed} 项`)
+  if (pending) parts.push(`${pending} 项仍在解析或排队`)
+  if (!parts.length) return
+  let note = `「${b.kb}」上传结果：${parts.join('、')}`
+  if (b.ok) note += '，解析完成后就能搜到'
+  if (b.failed) {
+    const why = b.errors[0] ? `（${b.errors[0]}）` : ''
+    note += `${why}，失败项可在上传队列里重试`
+  }
+  if (timedOut && pending) note += '（等待超时，可到上传队列查看最新状态）'
+  sysNote(note)
+}
+
+// 全量广播里只认自己登记过的批次；两个窗口都会收到，各自独立跟踪
+window.pet.onUploadUpdate(({ item }) => {
+  if (!item || !item.id) return
+  for (const batchId of [...uploadBatches.keys()]) {
+    settleUploadItem(batchId, item)
+    checkUploadBatch(batchId)
+  }
+})
+
 async function commitStore() {
   if (busy) return toast('这条回答还没结束，等它答完再存', 'warn')
   const files = shelf.filter((s) => s.kind === 'file' && s.ok && !s.dir).map((s) => s.path)
@@ -1402,6 +1488,8 @@ async function commitStore() {
   let failed = 0
   let queued = 0
   let existed = 0
+  let textDone = 0
+  let batchIds = []
   try {
     if (files.length || dirs.length) {
       const r = (await window.pet.uploadPaths([...files, ...dirs])) || {}
@@ -1410,15 +1498,19 @@ async function commitStore() {
         toast(r.error, 'warn')
       }
       // 真实上传在 Rust 侧排队：queued 是这次真正进队的数量，
-      // exists 是库里已经有、被去重掉的数量
+      // exists 是被去重掉的数量，ids 用来跟踪这批条目的最终结果
       queued += r.queued || 0
       existed += r.exists || 0
+      if (Array.isArray(r.ids)) batchIds = r.ids
     }
     for (const t of texts) {
+      // 文本走 apiRequest 同步提交，拿到的是真实结果，可以和文件分开报
       const r = await window.pet.uploadText({ title: t.title, content: t.content })
       if (r && r.error) {
         failed++
         toast(r.error, 'warn')
+      } else {
+        textDone++
       }
     }
   } finally {
@@ -1426,13 +1518,12 @@ async function commitStore() {
     renderShelf()
   }
   closeStore()
-  if (!failed) {
-    let note = `已提交 ${queued + texts.length} 项到「${kb}」`
-    if (existed) note += `，另外 ${existed} 项库里已经有`
-    sysNote(`${note}，解析完成后就能搜到`)
-  } else {
-    sysNote(`有 ${failed} 组没能提交成功，重试一次试试`)
-  }
+  // 入队只说「排队了」，不承诺成功；真实结果由 trackUploadBatch 汇总后播报
+  if (queued) sysNote(`已加入上传队列 ${queued} 项（${kb}），完成后在这里告诉你结果`)
+  if (existed) sysNote(`另外 ${existed} 项已在队列或库里，跳过重复上传`)
+  if (textDone) sysNote(`已存入 ${textDone} 条笔记到「${kb}」`)
+  if (failed) sysNote(`有 ${failed} 项没能提交成功，重试一次试试`)
+  trackUploadBatch(batchIds, kb)
 }
 
 function sysNote(text) {
@@ -1898,9 +1989,8 @@ function renderQueue(items) {
     const st = document.createElement('div')
     st.className = 'st ' + (it.status === 'parsing' && it.parseStatus === 'finalizing' ? 'finalizing' : it.status)
     let text = parseLabel(it)
-    if (it.status === 'queued' && it.tenantId && currentTenant && Number(it.tenantId) !== currentTenant) {
-      text = '换回该空间后继续'
-    }
+    // 上传条目自持 kb_id / 身份租户，切库不再挂起队列，
+    // 早期基于租户差异显示的「切回原空间」提示属于 403 时代产物，已移除
     st.textContent = it.status === 'failed' ? `失败 · ${it.error || ''}` : text
     row.appendChild(name)
     row.appendChild(st)
@@ -2070,7 +2160,7 @@ window.pet.onShotDemo(() => {
     },
     { tenantId: 10002, tenantName: '我的空间', role: 'owner', kbs: [] }
   ]
-  currentTenant = 10000
+  // 截图假数据不再硬编码租户号：身份租户只由登录态决定
   currentKB = 'kb1'
   askScope = { count: 2, total: 2, docs: 8, names: ['技术部门知识库', '接口文档'] }
   applyKBLabel({ ...kbGroups[0].kbs[0], tenantName: '技术部' })
