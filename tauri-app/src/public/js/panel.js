@@ -591,8 +591,24 @@ async function refreshKBs(force = false) {
   }
   let cur = all.find((k) => k.id === currentKB)
   if (!cur) {
-    // 上次选的库被删了 / 换了账号：挑文档最多的那个，静默落定
-    cur = all.slice().sort((a, b) => (b.documents || 0) - (a.documents || 0))[0]
+    // 上次选的库被删了 / 换了账号：优先挑自己空间（owner 组）里文档最多的，
+    // 绝不默认落到别人的库或部门共享库上。
+    const homeGroup = kbGroups.find((g) => g.role === 'owner')
+    if (homeGroup && homeGroup.kbs.length) {
+      const pool = homeGroup.kbs.map((k) => ({
+        ...k, tenantId: homeGroup.tenantId, tenantName: homeGroup.tenantName
+      }))
+      cur = pool.slice().sort((a, b) => (b.documents || 0) - (a.documents || 0))[0]
+    }
+  }
+  if (!cur) {
+    // 自己空间里一个库都没有：不替用户选别人的库，让他在下拉里显式挑一个。
+    // 旧版会按文档数全局挑，账号落错空间时正好把别人建的库设成上传目标。
+    el.kbName.textContent = '请选择知识库'
+    el.kbWhere.textContent = ''
+    el.kbMeta.textContent = ''
+    renderKBMenu(all)
+    return
   }
   currentKB = cur.id
   currentTenant = Number(cur.tenantId) || 0
@@ -618,14 +634,23 @@ function renderScope() {
     return
   }
   const total = (askScope && askScope.total) || n
-  el.kbMeta.textContent = n < total ? `回答基于 ${n}/${total} 个库` : `回答基于全部 ${n} 个库`
+  const readOnly = (askScope && askScope.readOnly) || 0
+  const writable = (askScope && askScope.writable) || 0
+  const base = n < total ? `回答基于 ${n}/${total} 个库` : `回答基于 ${n} 个库`
+  // 检索范围和「存入知识库」下拉不是一回事：下拉只列可写库，只读共享库照样
+  // 参与检索。把口径写出来，免得看起来像下拉漏了库。
+  el.kbMeta.textContent = readOnly > 0
+    ? `${base}（${writable} 个可存入 · ${readOnly} 个只读共享）`
+    : base
   el.kbMeta.title = `会同时检索：\n${(askScope.names || []).join('\n')}` +
+    (readOnly > 0 ? `\n\n其中 ${readOnly} 个是组织共享的只读库，能检索、不能存入` : '') +
     (n < total ? '\n（空库不参与检索）' : '')
   const sub = el.chatEmpty && el.chatEmpty.querySelector('.empty-sub')
   if (sub && !el.chatEmpty.classList.contains('hidden')) {
     const names = (askScope.names || []).slice(0, 3).join('、')
     const more = (askScope.names || []).length > 3 ? ' 等' : ''
-    sub.textContent = `覆盖本工作区的 ${names}${more}，共 ${n} 个库`
+    sub.textContent = `覆盖本工作区的 ${names}${more}，共 ${n} 个库` +
+      (readOnly > 0 ? `（${readOnly} 个只读共享）` : '')
   }
 }
 
