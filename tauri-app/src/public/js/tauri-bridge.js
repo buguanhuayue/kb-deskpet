@@ -198,12 +198,22 @@
   let activeSessionId = '';
   let cachedAskKbIds = [];
 
-  async function fetchAllKBs(tokenOverride) {
+  async function fetchAllKBs(tokenOverride, tenantIdOverride) {
     const cfg = loadCfg();
     const token = tokenOverride || cfg.token;
     const base = normalizeBase();
     const headers = { 'Accept': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
+    // 身份租户显式传，别让服务端按 JWT 里的 active_tenant 去猜。
+    // 账号被落到部门主租户时（2026-11-07 zhangzhangyi 事故），不带头会把
+    // 主租户里别人的库当成「个人空间」返回。
+    // 登录时会显式传本次的 home 租户；传 0 也是「显式没有」，绝不能退回 cfg
+    // 里上一个账号的 homeTenantId。只有完全没传 override 时才从 cfg 自愈。
+    const hasOverride = tenantIdOverride !== undefined && tenantIdOverride !== null;
+    const identityTenantId = hasOverride
+      ? (Number(tenantIdOverride) || 0)
+      : (Number(cfg.homeTenantId) || Number(cfg.user && cfg.user.tenant_id) || 0);
+    if (identityTenantId > 0) headers['X-Tenant-ID'] = String(identityTenantId);
 
     const [ownRes, sharedRes] = await Promise.allSettled([
       fetch(`${base}/knowledge-bases`, { headers }).then(r => r.json()),
@@ -229,8 +239,30 @@
       }
     }
 
-    const seen = new Set(own.map(k => k.id));
-    const merged = [...own, ...shared.filter(k => k.id && !seen.has(k.id))];
+    // 按 id 合并，而不是「own 优先、把同 id 的 shared 直接丢掉」：
+    // 同一个库可能既在自有列表又在共享列表（自己共享出去的库、或部门主租户
+    // 自有库被组织共享）。旧写法会吃掉 shared/permission 标记，于是 editor
+    // 权限库被误判成只读、下拉分组也塌成一组。
+    const byId = new Map();
+    for (const k of own) {
+      if (!k || !k.id) continue;
+      byId.set(k.id, { ...k, shared: false, sharePermission: 'owner' });
+    }
+    for (const k of shared) {
+      if (!k || !k.id) continue;
+      const prev = byId.get(k.id);
+      if (!prev) {
+        byId.set(k.id, k);
+        continue;
+      }
+      // 自有身份优先，但保留组织名与共享权限，供分组/文案使用。
+      byId.set(k.id, {
+        ...prev,
+        sharePermission: k.sharePermission || prev.sharePermission,
+        orgName: k.orgName || prev.orgName
+      });
+    }
+    const merged = [...byId.values()];
 
     return merged.map(k => {
       const docs = k.knowledge_count !== undefined ? k.knowledge_count : (k.documents ?? k.chunk_count ?? 0);
@@ -261,7 +293,10 @@
         tenantName: c.tenantName || '',
         kbId: c.kbId || '',
         kbName: c.kbName || '',
-        tenantId: Number(c.tenantId) || 0,
+        tenantId: Number(c.homeTenantId) ||
+          Number(c.user && c.user.tenant_id) || Number(c.tenantId) || 0,
+        homeTenantId: Number(c.homeTenantId) || 0,
+        currentTenantId: Number(c.currentTenantId) || 0,
         email: c.email || '',
         petPos: c.petPos || null,
         sidebarOpen: localStorage.getItem('deskpet_sidebar_open') !== '0',
@@ -287,24 +322,32 @@
         if (!token) throw new Error(data.message || '登录失败：未获取到 Token');
         const user = data.user || data.data?.user || { username: account, email: account };
         const activeTenant = data.active_tenant || data.data?.active_tenant || {};
-        // 租户以登录返回的 active_tenant 为准；后端没给就退回用户自己的 tenant_id，
+        // home 租户 = 账号归属的 workspace（user.tenant_id），永远不变；
+        // current 租户 = 本次登录落点（active_tenant），只用于显示。
+        // 早期把 active_tenant 直接当 homeTenantId：账号被落到部门主租户(10000)时，
+        // 上传把 X-Tenant-ID 发成 10000，知识库列表也把主租户的库当成个人空间。
         // 绝不写死某个租户号——写死过一次（10000），表现为所有上传都 403。
-        const tenantId = Number(activeTenant.id) || Number(user.tenant_id) || 0;
+        const homeTenantId = Number(user.tenant_id) || 0;
+        const currentTenantId = Number(activeTenant.id) || homeTenantId || 0;
         const tenantName = activeTenant.name || '';
         const refreshToken =
           data.refreshToken || data.refresh_token ||
           data.data?.refreshToken || data.data?.refresh_token || '';
 
-        // 获取完整知识库列表（包括个人库与共享库）
+        // 登录这一刻 cfg 里还存着上一个账号的身份，必须显式把本次的 home 租户传进去
         let allKbs = [];
         try {
-          allKbs = await fetchAllKBs(token);
+          allKbs = await fetchAllKBs(token, homeTenantId);
         } catch {}
 
-        const ownKbs = allKbs.filter(k => !k.shared);
         const writableKbs = allKbs.filter(k => !k.shared || k.permission === 'editor' || k.permission === 'owner');
-        // 不再兜底到某个人的知识库：一个都读不到就先登录进去，让用户在面板里自己选
-        const pick = ownKbs[0] || writableKbs[0] || allKbs[0] || null;
+        // 默认上传目标只从「home 租户下的自有库」里挑。
+        // 旧写法 ownKbs[0] 盲选第一个：账号落到部门主租户时，把别人建的 lgf
+        // 设成了默认上传目标（2026-11-07 事故）。取不到就留空，让面板显式选。
+        const homeOwnKbs = allKbs.filter(k =>
+          !k.shared && homeTenantId > 0 && Number(k.tenantId) === homeTenantId
+        );
+        const pick = homeOwnKbs[0] || null;
 
         saveCfg({
           token,
@@ -312,11 +355,12 @@
           refreshToken,
           user,
           userName: user.username || user.name || account,
-          tenantId,
+          tenantId: homeTenantId,
           // 身份租户单独存一份，切知识库/切空间都不许改它。
           // 上传要发的 X-Tenant-ID 只认这个值（与官方 Web 前端一致：永远发自己所在空间），
           // 早期把「共享库属主租户」当成租户头发给服务端，认证层直接 403。
-          homeTenantId: tenantId,
+          homeTenantId,
+          currentTenantId,
           tenantName,
           email: account,
           kbId: pick ? pick.id : '',
@@ -331,7 +375,9 @@
           token,
           user,
           userName: user.username || user.name || account,
-          tenantId,
+          tenantId: homeTenantId,
+          homeTenantId,
+          currentTenantId,
           tenantName,
           kbId: pick ? pick.id : '',
           kbName: pick ? pick.name : '',
@@ -348,8 +394,16 @@
     },
 
     logout: async () => {
-      // 身份租户一起清掉，避免换账号后残留上一个用户的空间号
-      saveCfg({ token: '', user: null, homeTenantId: 0 });
+      // 换账号时把身份、空间、上次选的库全部清掉，否则新账号会沿用上一个账号的
+      // kbId / tenantName，出现「张三的界面挂着李四的库」。
+      // 只保留 email 作为登录页回填，方便重新输入密码。
+      saveCfg({
+        token: '', refreshToken: '', user: null,
+        homeTenantId: 0, currentTenantId: 0, tenantId: 0,
+        tenantName: '', kbId: '', kbName: '',
+        userName: '', memberships: []
+      });
+      cachedAskKbIds = [];
       broadcast('logout', {});
     },
 
@@ -357,29 +411,53 @@
       try {
         const allKbs = await fetchAllKBs();
         const cfg = loadCfg();
-        // 没有默认租户：登录后由后端返回的 active_tenant 落盘，读不到就留 0
-        const tid = Number(cfg.tenantId) || 0;
-        const tname = cfg.tenantName || '';
+        // 身份租户只从 homeTenantId / user.tenant_id 取，绝不退回 cfg.tenantId：
+        // 旧版 selectKB 会把 cfg.tenantId 污染成共享库属主租户 10000。
+        const tid = Number(cfg.homeTenantId) || Number(cfg.user && cfg.user.tenant_id) || 0;
+        const homeName = cfg.tenantName || '个人空间';
 
-        // 个人空间：自己创建的库
         const ownKbs = allKbs.filter(k => !k.shared);
         // 共享可写库：技术部门知识库等 editor 权限库
         const sharedWritableKbs = allKbs.filter(k => k.shared && (k.permission === 'editor' || k.permission === 'owner'));
+        // 自有库按库的真实 tenant_id 分开，不再一律贴「个人空间 / 创建者」。
+        // 账号被落到部门主租户时，旧写法把 10000 里别人建的库显示成自己的。
+        const homeOwnKbs = ownKbs.filter(k => tid > 0 && Number(k.tenantId) === tid);
+        const foreignOwnKbs = ownKbs.filter(k => !(tid > 0 && Number(k.tenantId) === tid));
 
         const groups = [];
-        if (ownKbs.length) {
+        if (homeOwnKbs.length) {
           groups.push({
             tenantId: tid,
-            tenantName: '个人空间',
+            tenantName: homeName,
             role: 'owner',
-            kbs: ownKbs.map(k => ({
+            kbs: homeOwnKbs.map(k => ({
               id: k.id,
               name: k.name,
               documents: k.documents,
               shared: false,
               permission: 'owner',
               tenantId: tid,
-              tenantName: '个人空间'
+              tenantName: homeName
+            }))
+          });
+        }
+        if (foreignOwnKbs.length) {
+          // 库不在 home 租户：属于别的空间，标成「其他空间 / 成员」，不谎称创建者。
+          // 正常状态下这一组应该为空；它出现就说明账号又被落到错误空间了。
+          const foreignTenantId = Number(foreignOwnKbs[0].tenantId) || 0;
+          const foreignName = `其他空间（${foreignTenantId || '未知'}）`;
+          groups.push({
+            tenantId: foreignTenantId,
+            tenantName: foreignName,
+            role: 'member',
+            kbs: foreignOwnKbs.map(k => ({
+              id: k.id,
+              name: k.name,
+              documents: k.documents,
+              shared: false,
+              permission: 'member',
+              tenantId: Number(k.tenantId) || foreignTenantId,
+              tenantName: foreignName
             }))
           });
         }
@@ -406,18 +484,24 @@
 
         const totalDocs = allKbs.reduce((acc, cur) => acc + (cur.documents || 0), 0);
         const sortedNames = allKbs.slice().sort((a, b) => (b.documents || 0) - (a.documents || 0)).map(k => k.name);
+        // 问答范围保留全部可访问库（含只读共享），服务端本来就按组织共享授权放行读取；
+        // 只是把口径如实报给 UI，避免出现「11 个库 vs 下拉 2 个」的困惑。
         cachedAskKbIds = allKbs.map(k => k.id);
+        const readOnlyCount = allKbs.filter(k => k.shared && k.permission === 'viewer').length;
+        const writableCount = groups.reduce((n, g) => n + g.kbs.length, 0);
 
         return {
           ok: true,
           groups,
           current: cfg.kbId,
-          tenantId: cfg.tenantId,
+          tenantId: tid,
           ask: {
             count: allKbs.length,
             total: allKbs.length,
             docs: totalDocs,
-            names: sortedNames
+            names: sortedNames,
+            readOnly: readOnlyCount,
+            writable: writableCount
           }
         };
       } catch (err) {
