@@ -8,7 +8,7 @@
 //
 // 与后端的契约（在 192.168.1.234 上逐条实测过）：
 //   POST {base}/knowledge-bases/{kb}/knowledge/file   multipart 字段 file
-//        headers: Authorization: Bearer <token>, X-Tenant-ID: <tenant>
+//        headers: Authorization: Bearer <token>, X-Tenant-ID: <登录身份租户，>0 时才带>
 //        成功: HTTP 200 {"success":true,"data":{"id":"...","parse_status":"pending"}}
 //        重复: HTTP 409 {"success":false,"code":"duplicate_file","data":{已有记录}}
 //   GET  {base}/knowledge/{id}  → data.parse_status: pending/processing/finalizing/completed/failed
@@ -78,6 +78,9 @@ pub struct UploadItem {
     pub parse_elapsed: u64,
     pub error: String,
     pub tenant_id: i64,
+    /// 入队那一刻的目标知识库。队列共用一份全局 cfg，用户中途切库后
+    /// 旧的 queued 条目如果不自持 kb_id，就会静默上传到新选的库里。
+    pub kb_id: String,
 }
 
 impl UploadItem {
@@ -99,6 +102,7 @@ impl UploadItem {
             parse_elapsed: 0,
             error: String::new(),
             tenant_id,
+            kb_id: String::new(),
         }
     }
 }
@@ -410,7 +414,7 @@ fn fail(app: &AppHandle, id: &str, msg: &str) {
 }
 
 async fn upload_one(app: AppHandle, id: String) {
-    let (cfg, item) = {
+    let (mut cfg, item) = {
         let st = app.state::<UploadState>();
         let g = st.inner.lock().unwrap();
         let it = match g.items.iter().find(|i| i.id == id) {
@@ -419,6 +423,15 @@ async fn upload_one(app: AppHandle, id: String) {
         };
         (g.cfg.clone(), it)
     };
+
+    // 用条目入队时定下的 kb_id，不用此刻的全局 cfg：全局 cfg 会被下一次入队刷新，
+    // 用户切库后旧条目会串到新库去。tenant_id 同理取条目自己的身份租户。
+    if !item.kb_id.is_empty() {
+        cfg.kb_id = item.kb_id.clone();
+    }
+    if item.tenant_id > 0 {
+        cfg.tenant_id = item.tenant_id;
+    }
 
     if !cfg.usable() {
         fail(&app, &id, "没有登录或未选择知识库");
@@ -491,14 +504,17 @@ async fn upload_one(app: AppHandle, id: String) {
         };
         let form = multipart::Form::new().part("file", part);
 
-        let resp = client()
+        // X-Tenant-ID 只发登录身份租户（官方 Web 前端的做法）。
+        // 发共享库属主租户会撞上认证层「只认 tenant_members 直接成员」的闸，
+        // 组织成员的直接成员行已被软删 → 403；不带这个头则由 JWT 解析身份租户。
+        let mut req = client()
             .post(&url)
             .bearer_auth(&token)
-            .header("X-Tenant-ID", cfg.tenant_id.to_string())
-            .header("Accept", "application/json")
-            .multipart(form)
-            .send()
-            .await;
+            .header("Accept", "application/json");
+        if cfg.tenant_id > 0 {
+            req = req.header("X-Tenant-ID", cfg.tenant_id.to_string());
+        }
+        let resp = req.multipart(form).send().await;
 
         let resp = match resp {
             Ok(r) => r,
@@ -610,13 +626,15 @@ async fn upload_one(app: AppHandle, id: String) {
         it.parse_elapsed = 0;
     });
 
-    // 解析轮询单独起任务：不挡住队列里的下一个文件
+    // 解析轮询单独起任务：不挡住队列里的下一个文件。
+    // 轮询同样带上这条目自己的身份租户，别用可能被后续入队刷新的全局 cfg。
+    let poll_tenant_id = cfg.tenant_id;
     tauri::async_runtime::spawn(async move {
-        poll_parse(app, id, kid).await;
+        poll_parse(app, id, kid, poll_tenant_id).await;
     });
 }
 
-async fn poll_parse(app: AppHandle, id: String, knowledge_id: String) {
+async fn poll_parse(app: AppHandle, id: String, knowledge_id: String, tenant_id: i64) {
     let started = Instant::now();
     // 服务端实测 20 秒内完成；给到 5 分钟，超时只提示不当作失败
     for _ in 0..150 {
@@ -628,13 +646,14 @@ async fn poll_parse(app: AppHandle, id: String, knowledge_id: String) {
         }
         let token = usable_token(&app).await;
         let url = format!("{}/knowledge/{}", cfg.base(), knowledge_id);
-        let resp = client()
+        let mut req = client()
             .get(&url)
             .bearer_auth(&token)
-            .header("X-Tenant-ID", cfg.tenant_id.to_string())
-            .header("Accept", "application/json")
-            .send()
-            .await;
+            .header("Accept", "application/json");
+        if tenant_id > 0 {
+            req = req.header("X-Tenant-ID", tenant_id.to_string());
+        }
+        let resp = req.send().await;
 
         let v: Value = match resp {
             Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => {
@@ -751,6 +770,8 @@ pub fn upload_enqueue(
     let mut exists = 0usize;
     let mut skipped = 0usize;
     let mut too_big = Vec::new();
+    // 本次真正新建的条目 id，回给面板用于跟踪这批文件的真实上传结果
+    let mut ids: Vec<String> = Vec::new();
 
     {
         let st = app.state::<UploadState>();
@@ -760,12 +781,14 @@ pub fn upload_enqueue(
             g.cfg = cfg.clone();
         }
         if g.cfg.token.is_empty() {
-            return json!({ "queued": 0, "exists": 0, "skipped": 0, "error": "登录已过期，请重新登录" });
+            return json!({ "queued": 0, "exists": 0, "skipped": 0, "ids": [], "error": "登录已过期，请重新登录" });
         }
         if g.items.len() >= MAX_BATCH {
-            return json!({ "queued": 0, "exists": 0, "skipped": 0, "error": "队列太长，先清一下" });
+            return json!({ "queued": 0, "exists": 0, "skipped": 0, "ids": [], "error": "队列太长，先清一下" });
         }
         let tenant_id = if cfg.tenant_id > 0 { cfg.tenant_id } else { g.cfg.tenant_id };
+        // 每条固化自己的目标库：全局 cfg 会被后续入队刷新，切库后旧条目不能串库
+        let kb_id = if !cfg.kb_id.is_empty() { cfg.kb_id.clone() } else { g.cfg.kb_id.clone() };
 
         let mut fresh: Vec<(String, String, u64)> = Vec::new();
         for p in paths.iter().filter(|p| !p.is_empty()) {
@@ -800,7 +823,9 @@ pub fn upload_enqueue(
                 skipped += 1;
                 continue;
             }
-            let item = UploadItem::new(path, rel, size, tenant_id);
+            let mut item = UploadItem::new(path, rel, size, tenant_id);
+            item.kb_id = kb_id.clone();
+            ids.push(item.id.clone());
             g.items.push(item);
             queued += 1;
         }
@@ -816,7 +841,7 @@ pub fn upload_enqueue(
         }
     }
 
-    let mut out = json!({ "queued": queued, "exists": exists, "skipped": skipped });
+    let mut out = json!({ "queued": queued, "exists": exists, "skipped": skipped, "ids": ids });
     if !too_big.is_empty() {
         out["error"] = json!(format!(
             "{} 个文件超过 {}MB：{}",
@@ -1018,6 +1043,12 @@ mod tests {
         assert_eq!(v["name"], json!("a.md"));
         // 面板的「移除」按钮只在 knowledgeId 存在时渲染
         assert_eq!(v["knowledgeId"], json!("kid"));
+        // 条目自持目标库：切库后旧条目不能串到新库，序列化名必须是 camelCase
+        it.kb_id = "kb-owner".into();
+        it.tenant_id = 10016;
+        let v2 = serde_json::to_value(&it).unwrap();
+        assert_eq!(v2["kbId"], json!("kb-owner"), "缺 kbId: {}", v2);
+        assert_eq!(v2["tenantId"], json!(10016), "缺 tenantId: {}", v2);
     }
 
     #[test]

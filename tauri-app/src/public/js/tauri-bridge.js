@@ -313,6 +313,10 @@
           user,
           userName: user.username || user.name || account,
           tenantId,
+          // 身份租户单独存一份，切知识库/切空间都不许改它。
+          // 上传要发的 X-Tenant-ID 只认这个值（与官方 Web 前端一致：永远发自己所在空间），
+          // 早期把「共享库属主租户」当成租户头发给服务端，认证层直接 403。
+          homeTenantId: tenantId,
           tenantName,
           email: account,
           kbId: pick ? pick.id : '',
@@ -344,7 +348,8 @@
     },
 
     logout: async () => {
-      saveCfg({ token: '', user: null });
+      // 身份租户一起清掉，避免换账号后残留上一个用户的空间号
+      saveCfg({ token: '', user: null, homeTenantId: 0 });
       broadcast('logout', {});
     },
 
@@ -420,8 +425,11 @@
       }
     },
 
-    selectKB: async ({ id, name, tenantId }) => {
-      saveCfg({ kbId: id, kbName: name, tenantId });
+    selectKB: async ({ id, name }) => {
+      // 只落知识库选择，绝不写 tenantId：部门空间组的 tenantId 是「共享库属主租户」，
+      // 只用来给 UI 分组，写回 cfg 会把上传的 X-Tenant-ID 污染成 10000 而触发 403。
+      // 身份租户固定取 homeTenantId，跨租户写入由服务端按组织共享授权放行。
+      saveCfg({ kbId: id, kbName: name });
       return { ok: true };
     },
 
@@ -730,7 +738,10 @@
             serverUrl: cfg.serverUrl || DEFAULT_SERVER_URL,
             token: cfg.token || '',
             refreshToken: cfg.refreshToken || '',
-            tenantId: Number(cfg.tenantId) || 0,
+            // 上传永远以登录身份租户发起：跨租户的共享库写入由服务端路由守卫
+            // （KBAccessWrite → 组织共享判定）放行，不需要、也不能发共享库属主租户。
+            // 老用户 localStorage 里没有 homeTenantId（还没重新登录）时退回 tenantId 兼容。
+            tenantId: Number(cfg.homeTenantId) || Number(cfg.tenantId) || 0,
             kbId: cfg.kbId || ''
           }
         });
@@ -744,6 +755,7 @@
       );
       let exists = 0;
       let added = 0;
+      const ids = [];
       for (const p of paths) {
         if (!p) continue;
         if (known.has(p)) { exists++; continue; }
@@ -756,6 +768,7 @@
         };
         known.set(p, item);
         added++;
+        ids.push(item.id);
         uploadQueue.push(item);
         notifyUploadUpdate(item);
 
@@ -768,7 +781,7 @@
           }, 1500);
         }, 500);
       }
-      return { queued: added, exists };
+      return { queued: added, exists, ids };
     },
 
     listUploads: async () => {
