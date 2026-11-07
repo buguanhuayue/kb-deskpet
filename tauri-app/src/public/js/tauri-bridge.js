@@ -740,8 +740,11 @@
             refreshToken: cfg.refreshToken || '',
             // 上传永远以登录身份租户发起：跨租户的共享库写入由服务端路由守卫
             // （KBAccessWrite → 组织共享判定）放行，不需要、也不能发共享库属主租户。
-            // 老用户 localStorage 里没有 homeTenantId（还没重新登录）时退回 tenantId 兼容。
-            tenantId: Number(cfg.homeTenantId) || Number(cfg.tenantId) || 0,
+            // 老配置没有 homeTenantId：先从登录时存下的 user.tenant_id 自愈；
+            // 都取不到就发 0（Rust 不带租户头，服务端按 JWT 解析身份租户）。
+            // 绝不退回 cfg.tenantId —— 旧版切过共享库会把它污染成属主租户 10000，
+            // 那样老用户不重新登录就还是 403。
+            tenantId: Number(cfg.homeTenantId) || Number(cfg.user && cfg.user.tenant_id) || 0,
             kbId: cfg.kbId || ''
           }
         });
