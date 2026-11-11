@@ -86,7 +86,9 @@
     // origin 让 Rust 侧用 emit_filter 跳过发送方窗口：app.emit 是广播给所有窗口（含自己），
     // 同窗口再触发一次 listen 就会把同一个事件处理两遍。
     invoke('emit_event', { event: evt, payload, origin: SELF_LABEL });
-    if (bus) {
+    // auth 事件只走 Rust emit_event 这一条跨窗口通道。再叠一层 BroadcastChannel
+    // 会让另一窗口收到两遍，且 bus.onmessage 是裸 emit，绕过写盘清身份。
+    if (bus && !evt.startsWith('auth:')) {
       try { bus.postMessage({ evt, payload }); } catch {}
     }
   };
@@ -104,7 +106,12 @@
   if (bus) {
     bus.onmessage = (e) => {
       const { evt, payload } = e.data || {};
-      if (evt) emit(evt, payload);
+      if (!evt) return;
+      // auth 事件必须走统一处理：裸 emit 会绕过写盘清身份和幂等闸门
+      if (evt === 'auth:expired') { handleAuthExpiredEvent(); return; }
+      if (evt === 'auth:restored') { markAuthRestored(); return; }
+      if (evt === 'auth:logout') { emit('auth:logout', {}); return; }
+      emit(evt, payload);
     };
   }
 
@@ -127,12 +134,21 @@
     // 令牌刷新/过期由 Rust 侧判定，回传到前端落盘或提示重新登录
     eventMod.listen('auth:updated', (e) => {
       const p = e.payload || {};
-      if (p.token) {
-        saveCfg(p.refreshToken ? { token: p.token, refreshToken: p.refreshToken } : { token: p.token });
-        emit('auth:updated', p);
-      }
+      if (!p.token) return;
+      const patch = { token: p.token };
+      // 服务端只在轮换时才返回新 refreshToken；空串绝不能把旧值覆盖掉
+      if (p.refreshToken) patch.refreshToken = p.refreshToken;
+      saveCfg(patch);
+      // 不回推 upload_set_cfg：Rust 已经写好新令牌并清了过期闸门，
+      // 再推一次可能用上一周期的旧快照覆盖回去。
+      markAuthRestored();
+      emit('auth:updated', patch);
     });
-    eventMod.listen('auth:expired', () => emit('auth:expired', {}));
+    eventMod.listen('auth:expired', () => handleAuthExpiredEvent());
+    eventMod.listen('auth:restored', () => markAuthRestored());
+    // 主动登出的跨窗口接收端：broadcast 对 auth:* 不走 BroadcastChannel，
+    // 少了这条 listen，桌宠窗口永远收不到、退出后仍摆着已登录姿态。
+    eventMod.listen('auth:logout', () => emit('auth:logout', {}));
 
     // 原生拖拽支持：Tauri 2 拦截了系统级拖拽事件并转发为 tauri://drag-drop
     eventMod.listen('tauri://drag-drop', (e) => {
@@ -147,29 +163,230 @@
     });
   }
 
+  /* ---------------- 统一认证层 ----------------
+   * 401 的唯一出口：apiRequest / fetchAllKBs / ask / 启动校验全部收敛到这里。
+   * 先静默刷新，刷新失败才清身份并广播 auth:expired。
+   * refreshToken 是一次性的，并发 401 必须由单飞锁串成一个刷新请求，
+   * 否则后到的请求拿已作废的旧 refreshToken 去换，会把所有人一起踢去登录。
+   */
+  let authExpired = false;
+  let refreshFlight = null;
+
+  function buildUploadCfg() {
+    const c = loadCfg();
+    return {
+      serverUrl: c.serverUrl || DEFAULT_SERVER_URL,
+      token: c.token || '',
+      refreshToken: c.refreshToken || '',
+      // 上传永远以登录身份租户发起；绝不退回可能被旧版污染成 10000 的 cfg.tenantId
+      tenantId: Number(c.homeTenantId) || Number(c.user && c.user.tenant_id) || 0,
+      kbId: c.kbId || ''
+    };
+  }
+
+  // 换账号 / 换配置时把当前登录态推给 Rust 的上传队列。
+  // 注意：静默续期不走这里 —— 令牌由 Rust refresh_token() 单点写入并清闸，
+  // 前端回推的旧快照乱序到达会把刚轮换的新令牌覆盖回已作废的旧值。
+  // 返回 Promise，登录时 await 它，确保上传队列不会留着上一个账号的身份。
+  function syncRustCfg() {
+    if (!IS_TAURI) return Promise.resolve();
+    return invoke('upload_set_cfg', { cfg: buildUploadCfg() }).catch(() => {});
+  }
+
+  function kbHeaders(tokenOverride, tenantIdOverride) {
+    const cfg = loadCfg();
+    const token = (tokenOverride !== undefined && tokenOverride !== null && tokenOverride !== '')
+      ? tokenOverride : cfg.token;
+    const headers = { 'Accept': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    // 身份租户显式传，别让服务端按 JWT 里的 active_tenant 去猜（zhangzhangyi 事故）。
+    const hasOverride = tenantIdOverride !== undefined && tenantIdOverride !== null;
+    const identityTenantId = hasOverride
+      ? (Number(tenantIdOverride) || 0)
+      : (Number(cfg.homeTenantId) || Number(cfg.user && cfg.user.tenant_id) || 0);
+    if (identityTenantId > 0) headers['X-Tenant-ID'] = String(identityTenantId);
+    return headers;
+  }
+
+  // 只清身份字段，保留 email / serverUrl 供登录页回填。
+  // 必须写盘：state() 每次从 localStorage 重读，只改内存的话重启又会判成已登录，
+  // 回到主界面继续 401 静默失败 —— 这是旧实现最致命的一处。
+  function clearIdentity() {
+    saveCfg({
+      token: '', refreshToken: '', user: null,
+      homeTenantId: 0, currentTenantId: 0, tenantId: 0,
+      tenantName: '', kbId: '', kbName: '',
+      userName: '', memberships: []
+    });
+    cachedAskKbIds = [];
+    activeSessionId = '';
+    // 返回 Promise：主链路（onUnauthorized）会 await，确保空身份先推给 Rust，
+    // 不会晚到把随后重登写入的新令牌覆盖掉。
+    return syncRustCfg();
+  }
+
+  // 收到过期事件（Rust 广播 / 另一窗口广播 / 本窗口检测到 401）时的统一动作。
+  // 这里不再往外广播：Rust 的 app.emit 会到所有窗口，broadcast 带 origin 只到别的窗口，
+  // 再广播一次就会形成事件环。
+  function handleAuthExpiredEvent() {
+    if (authExpired) return;
+    authExpired = true;
+    clearIdentity();
+    emit('auth:expired', {});
+  }
+
+  function markAuthRestored() {
+    authExpired = false;
+    emit('auth:restored', {});
+  }
+
+  function broadcastAuthRestored() {
+    authExpired = false;
+    broadcast('auth:restored', {});
+  }
+
+  async function doRefresh() {
+    const cfg = loadCfg();
+    if (!cfg.refreshToken || !cfg.serverUrl) return false;
+    try {
+      let patch;
+      if (IS_TAURI) {
+        // 刷新收敛到 Rust 单飞执行（refresh_auth 与 usable_token 共一把锁）：
+        // 两端各刷一次会把一次性轮换的 refreshToken 互相作废，把所有人误踢到登录页。
+        // 命令直接回传新令牌，不等 auth:updated 事件异步到达。
+        // 带上 localStorage 令牌快照：冷启动时 Rust 的 UploadState.cfg 还是空的，
+        // 不补齐就会把「access 过期但 refresh 有效」误判成必须重新登录。
+        const r = await invoke('refresh_auth', { cfg: buildUploadCfg() });
+        if (r && r.transient) throw new TransientRefreshError();
+        if (!r || !r.ok || !r.token) return false;
+        patch = { token: r.token };
+        if (r.refreshToken) patch.refreshToken = r.refreshToken;
+      } else {
+        // 纯浏览器预览（没有 Tauri 运行时）时才自己发请求
+        let res;
+        try {
+          res = await fetch(`${normalizeBase()}/auth/refresh`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ refreshToken: cfg.refreshToken }),
+            signal: AbortSignal.timeout(10000)
+          });
+        } catch {
+          throw new TransientRefreshError();
+        }
+        if (!res.ok) {
+          if (res.status >= 500 || res.status === 429) throw new TransientRefreshError();
+          return false;
+        }
+        let body;
+        try { body = await res.json(); } catch { throw new TransientRefreshError(); }
+        const nested = body && body.data ? body.data : null;
+        const pick = (...keys) => {
+          for (const src of [nested, body]) {
+            if (!src) continue;
+            for (const k of keys) {
+              const v = src[k];
+              if (typeof v === 'string' && v) return v;
+            }
+          }
+          return '';
+        };
+        const token = pick('token', 'accessToken', 'access_token');
+        if (!token) return false;
+        const newRefresh = pick('refreshToken', 'refresh_token');
+        patch = { token };
+        if (newRefresh) patch.refreshToken = newRefresh;
+      }
+      saveCfg(patch);
+      // 令牌由 Rust 单点维护：这里只把新令牌写进 localStorage 供 HTTP 请求使用，
+      // 不再回推 upload_set_cfg（旧快照乱序到达会覆盖刚轮换的新令牌）。
+      markAuthRestored();
+      emit('auth:updated', patch);
+      return true;
+    } catch (e) {
+      // 暂时性故障必须冒泡，不能当成「刷新失败」去清盘踢登录
+      if (e instanceof TransientRefreshError) throw e;
+      return false;
+    }
+  }
+
+  function refreshOnce() {
+    if (refreshFlight) return refreshFlight;
+    refreshFlight = doRefresh().finally(() => { refreshFlight = null; });
+    return refreshFlight;
+  }
+
+  // 返回 true = 刷新成功，调用方重放一次原请求；false = 已过期，全窗口回登录页。
+  async function onUnauthorized(canRetry) {
+    if (authExpired) return false;
+    if (canRetry && await refreshOnce()) return true;
+    // 5 个并发 401 共享同一个失败的 flight，await 之后必须重查一次，
+    // 否则 5 个 waiter 会各清一次盘、各广播一次过期事件。
+    if (authExpired) return false;
+    authExpired = true;
+    // clearIdentity 里 saveCfg 是同步的，身份已立即写盘。先广播让 UI 立刻切登录页，
+    // 再等 IPC 完成（保住「清盘 → 重登」的顺序），别把界面切换绑在 Rust 往返上。
+    const synced = clearIdentity();
+    // broadcast 内部已在本窗口 emit 一次，同时经 Rust emit_filter 送到另一个窗口；
+    // 不要再调 handleAuthExpiredEvent，否则本窗口会收到两遍事件。
+    broadcast('auth:expired', {});
+    await synced;
+    return false;
+  }
+
+  class AuthExpiredError extends Error {
+    constructor() {
+      super('登录已过期，请重新登录');
+      this.name = 'AuthExpiredError';
+    }
+  }
+
+  // 续期请求本身没打通（断网 / 5xx）：refreshToken 可能仍然有效。
+  // 绝不能清盘、不能跳登录页，否则一次网络抖动就不可逆地把用户踢下线。
+  // 作为普通错误冒泡：apiRequest 显示网络错误，启动校验按 degraded 放行。
+  class TransientRefreshError extends Error {
+    constructor() {
+      super('网络暂不可用，无法完成登录续期');
+      this.name = 'TransientRefreshError';
+    }
+  }
+
   function normalizeBase() {
     const cfg = loadCfg();
     const s = (cfg.serverUrl || DEFAULT_SERVER_URL).replace(/\/+$/, '');
     return `${s}/api/v1`;
   }
 
-  async function apiRequest(path, options = {}) {
-    const cfg = loadCfg();
-    const base = normalizeBase();
-    const url = `${base}${path}`;
-    const headers = { 'Accept': 'application/json', ...options.headers };
-    if (cfg.token) headers['Authorization'] = `Bearer ${cfg.token}`;
-    if (options.body && !(options.body instanceof FormData)) {
-      headers['Content-Type'] = 'application/json';
-      options.body = JSON.stringify(options.body);
-    }
+  async function apiRequest(path, options = {}, retried = false) {
+    const { skipAuthRefresh, ...fetchOptions } = options;
+    const doFetch = async () => {
+      const cfg = loadCfg();
+      const headers = { 'Accept': 'application/json', ...(options.headers || {}) };
+      if (cfg.token) headers['Authorization'] = `Bearer ${cfg.token}`;
+      const rawBody = options.body;
+      const isForm = typeof FormData !== 'undefined' && rawBody instanceof FormData;
+      const body = (rawBody && !isForm && typeof rawBody !== 'string')
+        ? JSON.stringify(rawBody) : rawBody;
+      if (body && !isForm) headers['Content-Type'] = 'application/json';
+      return fetch(`${normalizeBase()}${path}`, { ...fetchOptions, headers, ...(body !== undefined ? { body } : {}) });
+    };
 
-    const res = await fetch(url, { ...options, headers });
+    let res = await doFetch();
+    // 登录接口的 401 是「账号或密码不对」，不是 token 过期，别去刷新
+    if (res.status === 401 && !retried && !skipAuthRefresh) {
+      if (await onUnauthorized(true)) return apiRequest(path, options, true);
+      throw new AuthExpiredError();
+    }
     const text = await res.text();
     let json = null;
     try { json = JSON.parse(text); } catch { json = null; }
 
     if (!res.ok) {
+      // 重放后仍是 401：新令牌也被拒，同样按过期处理，不能留着旧身份继续静默失败
+      if (res.status === 401 && !skipAuthRefresh) {
+        await onUnauthorized(false);
+        throw new AuthExpiredError();
+      }
       const msg = json?.message || json?.error || text || `HTTP ${res.status}`;
       throw new Error(msg);
     }
@@ -198,27 +415,41 @@
   let activeSessionId = '';
   let cachedAskKbIds = [];
 
-  async function fetchAllKBs(tokenOverride, tenantIdOverride) {
-    const cfg = loadCfg();
-    const token = tokenOverride || cfg.token;
-    const base = normalizeBase();
-    const headers = { 'Accept': 'application/json' };
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    // 身份租户显式传，别让服务端按 JWT 里的 active_tenant 去猜。
-    // 账号被落到部门主租户时（2026-11-07 zhangzhangyi 事故），不带头会把
-    // 主租户里别人的库当成「个人空间」返回。
-    // 登录时会显式传本次的 home 租户；传 0 也是「显式没有」，绝不能退回 cfg
-    // 里上一个账号的 homeTenantId。只有完全没传 override 时才从 cfg 自愈。
-    const hasOverride = tenantIdOverride !== undefined && tenantIdOverride !== null;
-    const identityTenantId = hasOverride
-      ? (Number(tenantIdOverride) || 0)
-      : (Number(cfg.homeTenantId) || Number(cfg.user && cfg.user.tenant_id) || 0);
-    if (identityTenantId > 0) headers['X-Tenant-ID'] = String(identityTenantId);
+  // 知识库列表原先连 res.ok 都不判：401 时 .json() 照样解析错误体，data 取不到
+  // 就返回空数组，界面显示「没有可用知识库，找管理员开通」，属于完全静默的失败。
+  async function getKbJson(path, tokenOverride, tenantIdOverride, retried = false, opts = {}) {
+    const res = await fetch(`${normalizeBase()}${path}`, {
+      headers: kbHeaders(tokenOverride, tenantIdOverride)
+    });
+    if (res.status === 401 && !opts.skipAuth && !retried) {
+      if (await onUnauthorized(true)) {
+        // 用刷新后落盘的新令牌重放，不能再沿用调用方传入的旧 token
+        return getKbJson(path, null, tenantIdOverride, true, opts);
+      }
+      throw new AuthExpiredError();
+    }
+    if (res.status === 401 && !opts.skipAuth) {
+      await onUnauthorized(false);
+      throw new AuthExpiredError();
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
 
+  async function fetchAllKBs(tokenOverride, tenantIdOverride, opts = {}) {
     const [ownRes, sharedRes] = await Promise.allSettled([
-      fetch(`${base}/knowledge-bases`, { headers }).then(r => r.json()),
-      fetch(`${base}/shared-knowledge-bases`, { headers }).then(r => r.json())
+      getKbJson('/knowledge-bases', tokenOverride, tenantIdOverride, false, opts),
+      getKbJson('/shared-knowledge-bases', tokenOverride, tenantIdOverride, false, opts)
     ]);
+    // 认证过期不能被 allSettled 吞掉：上层据此回到登录页
+    for (const r of [ownRes, sharedRes]) {
+      if (r.status === 'rejected' && r.reason instanceof AuthExpiredError) throw r.reason;
+    }
+    // 两个请求都失败（断网 / 5xx）：别把故障伪装成「没有可用知识库，找管理员开通」，
+    // 让 listKBs 返回 ok:false，面板显示「知识库读取失败」。
+    if (ownRes.status === 'rejected' && sharedRes.status === 'rejected') {
+      throw new Error(ownRes.reason?.message || '知识库列表读取失败');
+    }
 
     let own = [];
     if (ownRes.status === 'fulfilled' && ownRes.value) {
@@ -304,6 +535,30 @@
       };
     },
 
+    // 启动校验：只有「明确的 401」才算会话过期。网络故障 / 5xx / 超时一律放行，
+    // 否则离线打开桌宠会被误踢到登录页。
+    // 探针复用已确定存在的 GET /knowledge-bases，不引入未验证的新接口。
+    validateSession: async () => {
+      const cfg = loadCfg();
+      if (!cfg.token || !cfg.user) return { ok: false, loggedIn: false, expired: true };
+      const probe = () => fetch(`${normalizeBase()}/knowledge-bases`, {
+        headers: kbHeaders(),
+        signal: AbortSignal.timeout(6000)
+      });
+      try {
+        let res = await probe();
+        if (res.status === 401 && await onUnauthorized(true)) res = await probe();
+        if (res.status === 401) {
+          await onUnauthorized(false);
+          return { ok: false, expired: true };
+        }
+        return { ok: true, degraded: !res.ok };
+      } catch (e) {
+        if (e instanceof AuthExpiredError) return { ok: false, expired: true };
+        return { ok: true, degraded: true, error: e.message };
+      }
+    },
+
     login: async ({ serverUrl, email, password }) => {
       // 不再带任何默认账号/密码：账号密码只能由用户自己输入。
       const account = normalizeAccount(String(email || '').trim());
@@ -314,7 +569,9 @@
       try {
         const data = await apiRequest('/auth/login', {
           method: 'POST',
-          body: { email: account, password: pass }
+          body: { email: account, password: pass },
+          // 登录接口的 401 是「账号或密码不对」，不是会话过期
+          skipAuthRefresh: true
         });
         // 后端登录返回的令牌字段在不同版本里分别是 token / access_token，
         // 刷新令牌则是新增的，没有它 access token 一天后过期就只能重新登录。
@@ -337,7 +594,9 @@
         // 登录这一刻 cfg 里还存着上一个账号的身份，必须显式把本次的 home 租户传进去
         let allKbs = [];
         try {
-          allKbs = await fetchAllKBs(token, homeTenantId);
+          // 此刻身份还没落盘，cfg 里可能仍是上一个账号的 refreshToken；
+          // 登录阶段的列表请求不参与续期，401 就按「取不到库」处理。
+          allKbs = await fetchAllKBs(token, homeTenantId, { skipAuth: true });
         } catch {}
 
         const writableKbs = allKbs.filter(k => !k.shared || k.permission === 'editor' || k.permission === 'owner');
@@ -386,6 +645,11 @@
           email: account
         };
 
+        // 新身份落盘后同步给 Rust 上传队列：既清掉上一个账号的旧令牌，
+        // 也让 token 过期时保留下来的排队条目自动续跑。必须 await，
+        // 否则用户立刻拖文件时 Rust 里可能还是上一个账号的身份。
+        await syncRustCfg();
+        broadcastAuthRestored();
         broadcast('login_success', stateResult);
         return stateResult;
       } catch (err) {
@@ -404,7 +668,13 @@
         userName: '', memberships: []
       });
       cachedAskKbIds = [];
+      activeSessionId = '';
+      // 把空身份推给 Rust，否则上传队列会一直揣着上一个账号的 token
+      await syncRustCfg();
+      authExpired = false;
       broadcast('logout', {});
+      // 桌宠窗口也要同步回「未登录」姿态，否则主动退出后它仍显示已登录
+      broadcast('auth:logout', {});
     },
 
     listKBs: async (force) => {
@@ -505,7 +775,8 @@
           }
         };
       } catch (err) {
-        return { ok: false, groups: [], error: err.message };
+        // 认证过期时统一认证层已把界面切回登录页；这里只如实回报，别再显示「找管理员开通」
+        return { ok: false, expired: err instanceof AuthExpiredError, groups: [], error: err.message };
       }
     },
 
@@ -529,7 +800,11 @@
             body: { title: query.slice(0, 20) }
           });
           activeSessionId = sRes.data?.id || sRes.id || '';
-        } catch {
+        } catch (e) {
+          if (e instanceof AuthExpiredError) return { error: e.message };
+          // 续期请求没打通时别造一个假 sessionId 再发一次注定失败的 SSE；
+          // 旧写法会落进下面的兜底，凭空多出 /knowledge-chat/s_<timestamp> 请求。
+          if (e instanceof TransientRefreshError) return { error: e.message };
           activeSessionId = 's_' + Date.now();
         }
       }
@@ -547,16 +822,29 @@
           payload.attachment_ids = attachmentIds;
         }
 
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${cfg.token}`,
-            'Content-Type': 'application/json',
-            'Accept': 'text/event-stream'
-          },
-          body: JSON.stringify(payload)
-        });
+        // SSE 开始前若拿到 401 就静默续期并重放一次；流中途不会再返回 HTTP 401。
+        // 重放必须用刚落盘的新令牌，不能用函数开头的 cfg 快照。
+        const askFetch = async (authToken, retried) => {
+          const r = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${authToken}`,
+              'Content-Type': 'application/json',
+              'Accept': 'text/event-stream'
+            },
+            body: JSON.stringify(payload)
+          });
+          if (r.status === 401 && !retried && await onUnauthorized(true)) {
+            return askFetch(loadCfg().token, true);
+          }
+          return r;
+        };
+        const res = await askFetch(loadCfg().token, false);
 
+        if (res.status === 401) {
+          await onUnauthorized(false);
+          throw new AuthExpiredError();
+        }
         if (!res.ok) {
           const errText = await res.text();
           throw new Error(`问答请求失败: ${errText || res.status}`);
@@ -816,22 +1104,9 @@
       if (!paths || !paths.length) return { queued: 0, exists: 0 };
       const cfg = loadCfg();
       if (IS_TAURI) {
-        const r = await invoke('upload_enqueue', {
-          paths,
-          cfg: {
-            serverUrl: cfg.serverUrl || DEFAULT_SERVER_URL,
-            token: cfg.token || '',
-            refreshToken: cfg.refreshToken || '',
-            // 上传永远以登录身份租户发起：跨租户的共享库写入由服务端路由守卫
-            // （KBAccessWrite → 组织共享判定）放行，不需要、也不能发共享库属主租户。
-            // 老配置没有 homeTenantId：先从登录时存下的 user.tenant_id 自愈；
-            // 都取不到就发 0（Rust 不带租户头，服务端按 JWT 解析身份租户）。
-            // 绝不退回 cfg.tenantId —— 旧版切过共享库会把它污染成属主租户 10000，
-            // 那样老用户不重新登录就还是 403。
-            tenantId: Number(cfg.homeTenantId) || Number(cfg.user && cfg.user.tenant_id) || 0,
-            kbId: cfg.kbId || ''
-          }
-        });
+        // 令牌 / 身份租户 / 目标库统一由 buildUploadCfg() 取，
+        // 绝不退回可能被旧版污染成 10000 的 cfg.tenantId（403 事故的根因）。
+        const r = await invoke('upload_enqueue', { paths, cfg: buildUploadCfg() });
         if (!r) return { queued: 0, exists: 0, error: '上传服务不可用' };
         return r;
       }
@@ -1004,8 +1279,12 @@
 
     // 事件监听注册
     onUploadUpdate: (cb) => on('upload:update', cb),
-    // 令牌过期（自动续期也失败）：面板需要退回登录页
+    // 令牌过期（自动续期也失败）：面板需要退回登录页；桌宠窗口同步提示
     onAuthExpired: (cb) => on('auth:expired', cb),
+    // 重新登录成功 / 静默续期成功：桌宠窗口从 alert 恢复
+    onAuthRestored: (cb) => on('auth:restored', cb),
+    // 主动退出：桌宠窗口同步回未登录姿态
+    onAuthLogout: (cb) => on('auth:logout', cb),
     onChatEvent: (cb) => on('chat:event', cb),
     onPetState: (cb) => on('pet:state', cb),
     setPetState: (s) => broadcast('pet:state', s),
