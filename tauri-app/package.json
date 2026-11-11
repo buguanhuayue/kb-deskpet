@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/check-syntax.mjs && node scripts/test-md.mjs && vite build",
-    "check": "node scripts/check-syntax.mjs && node scripts/test-md.mjs",
-    "test": "node scripts/test-md.mjs",
+    "build": "node scripts/check-syntax.mjs && node scripts/test-md.mjs && node scripts/test-auth.mjs && vite build",
+    "check": "node scripts/check-syntax.mjs && node scripts/test-md.mjs && node scripts/test-auth.mjs",
+    "test": "node scripts/test-md.mjs && node scripts/test-auth.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
