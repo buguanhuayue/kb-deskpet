@@ -394,6 +394,30 @@ window.pet.onPetState((s) => {
   else if (s === 'idle') setState('idle')
 })
 
+/* ---------- 登录态同步 ---------- */
+
+// 面板跳登录页时桌宠窗口也要有感知：旧实现只在启动时读一次 state()，
+// 结果 token 过期后桌宠还一直摆着「已登录」的待机姿势。
+window.pet.onAuthExpired?.(() => {
+  clearTimeout(uploadStallTimer)
+  uploading = false
+  setState('alert')
+  say('登录已过期，点我重新登录', 9000)
+})
+
+window.pet.onAuthRestored?.(() => {
+  setState('idle')
+  say('已恢复登录，可以继续啦', 3000)
+})
+
+// 主动退出和被动过期是两回事：文案要区分，但姿态同样是「需要登录」。
+window.pet.onAuthLogout?.(() => {
+  clearTimeout(uploadStallTimer)
+  uploading = false
+  setState('alert')
+  say('已退出登录，点我重新登录', 9000)
+})
+
 /* ---------- 启动引导 ---------- */
 
 ;(async () => {
