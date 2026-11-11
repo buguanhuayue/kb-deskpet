@@ -161,6 +161,12 @@ struct Inner {
 pub struct UploadState {
     inner: Mutex<Inner>,
     busy: AtomicBool,
+    /// 认证已失效：kick 循环必须停下，把排队中的条目原样留给用户重新登录后自动续跑。
+    /// 没有这道闸门，上传失败后循环会继续取下一个 queued 条目，把它们逐个也标成失败。
+    auth_blocked: AtomicBool,
+    /// 全应用唯一的刷新锁：前端 refresh_auth 命令、usable_token 预刷新、上传/轮询的
+    /// 401 重放都走同一把锁。刷新令牌一次性轮换，跨端各刷一次必然互相作废。
+    refresh_lock: tokio::sync::Mutex<()>,
 }
 
 impl UploadState {
@@ -171,6 +177,8 @@ impl UploadState {
                 items: Vec::new(),
             }),
             busy: AtomicBool::new(false),
+            auth_blocked: AtomicBool::new(false),
+            refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -212,6 +220,79 @@ fn current_cfg(app: &AppHandle) -> UploadCfg {
     let st = app.state::<UploadState>();
     let g = st.inner.lock().unwrap();
     g.cfg.clone()
+}
+
+/// 冷启动时 Rust 侧还是 UploadCfg::default()（空），而 localStorage 里已有有效的
+/// refresh_token：不补齐的话启动校验一遇 401 就会误判「无法续期」把用户踢去登录。
+/// 只在自己为空时用前端快照补齐，绝不覆盖另一个窗口刚刷出来的新令牌；
+/// 也不碰 auth_blocked 闸门（那是 upload_set_cfg 的职责）。
+fn prime_cfg_from_snapshot(current: &mut UploadCfg, snap: &UploadCfg) -> bool {
+    let mut changed = false;
+    if current.refresh_token.is_empty() && !snap.refresh_token.is_empty() {
+        current.refresh_token = snap.refresh_token.clone();
+        changed = true;
+    }
+    if current.server_url.is_empty() && !snap.server_url.is_empty() {
+        current.server_url = snap.server_url.clone();
+        changed = true;
+    }
+    if current.token.is_empty() && !snap.token.is_empty() {
+        current.token = snap.token.clone();
+        changed = true;
+    }
+    changed
+}
+
+/// 认证失效时按状态处理条目：正在上传 / 解析中的标失败，排队中的原样保留。
+/// 抽成纯函数便于单测；不依赖服务端恰好返回 401 —— 令牌被清后服务端
+/// 也可能回 403 或 200，只靠各轮询点自己判 401 会让条目永远卡在 parsing。
+fn mark_auth_failure(items: &mut [UploadItem]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for it in items.iter_mut() {
+        if it.status == "uploading" || it.status == "parsing" {
+            it.status = "failed".into();
+            it.progress = 0;
+            it.error = "登录已过期，请重新登录".into();
+            ids.push(it.id.clone());
+        }
+    }
+    ids
+}
+
+/// 只有第一个触发者返回 true。抽出来便于单测「多次 401 只广播一次」。
+fn claim_auth_expiry(flag: &AtomicBool) -> bool {
+    !flag.swap(true, Ordering::SeqCst)
+}
+
+/// 认证失效的状态变更：清掉 Rust 侧缓存的令牌、按状态标失败、暂停队列。
+/// 不广播事件；返回 true 表示是首个触发者，由调用方决定是否广播。
+/// 前端刷新失败（refresh_auth 返回 false）也必须走这里，否则 kick 会拿着
+/// 刚被前端清掉的令牌继续消费 queued 条目，违背「排队保留、重登续跑」。
+fn block_auth(app: &AppHandle) -> bool {
+    let st = app.state::<UploadState>();
+    let first = claim_auth_expiry(&st.auth_blocked);
+    let changed = {
+        let mut g = st.inner.lock().unwrap();
+        // 只在首次清令牌：并发 401 里若有一个刷新请求正在写回新令牌，
+        // 后续 block_auth 再清一次会把刚轮换出的有效令牌一起抹掉。
+        if first {
+            g.cfg.token.clear();
+            g.cfg.refresh_token.clear();
+        }
+        mark_auth_failure(&mut g.items)
+    };
+    // 逐条广播状态变化，面板与桌宠窗口才能立刻看到「失败」
+    for id in changed {
+        update_item(app, &id, |_| {});
+    }
+    first
+}
+
+/// 上传/轮询自身遇到 401：置闸并广播给所有窗口。
+fn expire_auth(app: &AppHandle) {
+    if block_auth(app) {
+        let _ = app.emit("auth:expired", json!({}));
+    }
 }
 
 /* ---------------- 目录展开 ---------------- */
@@ -319,11 +400,78 @@ fn pick_field(body: &Value, keys: &[&str]) -> String {
     String::new()
 }
 
+/// 刷新结果三态。以前一律 false，导致断网/5xx 也把 localStorage 里仍有效的
+/// refreshToken 清掉并踢去登录页 —— 不可逆，且违背「断网/5xx 放行」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshOutcome {
+    /// 服务端换发了新令牌
+    Rotated,
+    /// 服务端明确判定 refreshToken 无效：会话真的结束了
+    Invalid,
+    /// 网络故障 / 5xx / 响应异常：令牌可能仍然有效，不能据此清盘
+    Transient,
+}
+
+/// 只有服务端明确判定「令牌无效」的 400/401/403 才算会话结束；
+/// 429、5xx、其它异常一律按暂时性故障，绝不据此清掉仍有效的 refreshToken。
+fn classify_refresh_status(status: reqwest::StatusCode) -> RefreshOutcome {
+    match status {
+        s if s == reqwest::StatusCode::UNAUTHORIZED
+            || s == reqwest::StatusCode::FORBIDDEN
+            || s == reqwest::StatusCode::BAD_REQUEST => RefreshOutcome::Invalid,
+        _ => RefreshOutcome::Transient,
+    }
+}
+
+/// 等锁期间前一个持有者是否已经刷新成功。token 被清空（过期置闸）时不算，
+/// 否则会把闸门已开的状态误当成「复用刷新结果」放行。
+fn refresh_was_rotated(before: &UploadCfg, after: &UploadCfg) -> bool {
+    after.token != before.token && !after.token.is_empty()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Upload401Action {
+    /// 用新令牌重放本次请求
+    Retry,
+    /// 只让当前条目失败，保留登录态和排队条目
+    FailTransient,
+    /// 会话真的结束：置闸、清盘、跳登录
+    Expire,
+}
+
+/// 上传与解析轮询共用同一套 401 决策，避免两条链路语义漂移。
+/// 「已经重放过一次」由调用方各自用独立布尔判断，不塞进这里：upload_one 的
+/// attempt 还兼着网络层重试，拿它当 already_retried 会把「网络抖一下后首次 401」
+/// 误判成重放失败，刷新成功反而清盘踢登录。
+fn decide_upload_401(outcome: RefreshOutcome) -> Upload401Action {
+    match outcome {
+        RefreshOutcome::Rotated => Upload401Action::Retry,
+        RefreshOutcome::Transient => Upload401Action::FailTransient,
+        RefreshOutcome::Invalid => Upload401Action::Expire,
+    }
+}
+
+/// 空 token 也要尝试刷新：冷启动 / 身份被清后 jwt_expired("") 返回 false，
+/// 旧写法直接跳过刷新并 expire_auth，把暂时性故障误判成会话结束。
+fn should_attempt_refresh(token: &str) -> bool {
+    token.is_empty() || jwt_expired(token)
+}
+
 /// 用 refresh_token 换新 access token；成功后把新令牌广播给前端落盘。
-async fn refresh_token(app: &AppHandle) -> bool {
+/// 全应用唯一的刷新入口：前端 refresh_auth 命令、usable_token 预刷新、
+/// 上传/轮询的 401 重放全部走这里，由同一把跨端互斥锁串行化。
+async fn refresh_token(app: &AppHandle) -> RefreshOutcome {
+    let before = current_cfg(app);
+    if before.refresh_token.is_empty() || before.server_url.is_empty() {
+        return RefreshOutcome::Invalid;
+    }
+    let st = app.state::<UploadState>();
+    let _guard = st.refresh_lock.lock().await;
+    // 排队等锁期间前一个持有者可能已经刷新成功：直接复用它的结果，
+    // 绝不能拿已经作废的旧 refresh_token 再刷一次。
     let cfg = current_cfg(app);
-    if cfg.refresh_token.is_empty() || cfg.server_url.is_empty() {
-        return false;
+    if refresh_was_rotated(&before, &cfg) {
+        return RefreshOutcome::Rotated;
     }
     let url = format!("{}/auth/refresh", cfg.base());
     let resp = client()
@@ -333,49 +481,70 @@ async fn refresh_token(app: &AppHandle) -> bool {
         .await;
     let resp = match resp {
         Ok(r) => r,
-        Err(_) => return false,
+        Err(_) => return RefreshOutcome::Transient,
     };
+    // 非 2xx 别指望错误体里恰好是合法 JSON；按状态码分类即可。
+    if !resp.status().is_success() {
+        return classify_refresh_status(resp.status());
+    }
     let body: Value = match resp.json().await {
         Ok(v) => v,
-        Err(_) => return false,
+        Err(_) => return RefreshOutcome::Transient,
     };
     if body.get("success").and_then(|v| v.as_bool()) != Some(true) {
-        return false;
+        return RefreshOutcome::Invalid;
     }
     // 实测服务端返回的是扁平的 snake_case：
     //   {"success":true,"access_token":"...","refresh_token":"...","message":"..."}
     // 不是文档里那种包在 data 里、键名 camelCase 的形状，所以两种都兼容着取。
     let token = pick_field(&body, &["token", "accessToken", "access_token"]);
     if token.is_empty() {
-        return false;
+        return RefreshOutcome::Transient;
     }
     // 刷新令牌是一次性的：服务端每次刷新都会轮换，旧的立刻作废。
     // 所以必须把新的存下来，否则下次刷新一定失败。
     let new_refresh = pick_field(&body, &["refreshToken", "refresh_token"]);
 
-    {
+    let has_queued = {
         let st = app.state::<UploadState>();
         let mut g = st.inner.lock().unwrap();
         g.cfg.token = token.clone();
         if !new_refresh.is_empty() {
             g.cfg.refresh_token = new_refresh.clone();
         }
+        g.items.iter().any(|i| i.status == "queued")
+    };
+    // 令牌由 Rust 单点维护：刷新成功就在这里清闸并续跑队列，前端不再回推
+    // upload_set_cfg（旧快照乱序到达会把刚轮换的新令牌覆盖回已作废的旧值）。
+    st.auth_blocked.store(false, Ordering::SeqCst);
+    if has_queued {
+        kick(app.clone());
     }
-    // 让 bridge 把新令牌写回 localStorage，面板后续的问答/接口调用才不会 401
-    let _ = app.emit(
-        "auth:updated",
-        json!({ "token": token, "refreshToken": new_refresh }),
-    );
-    true
+    // 让 bridge 把新令牌写回 localStorage，面板后续的问答/接口调用才不会 401。
+    // 服务端没返回新 refreshToken 时不能下发空串：前端收到空串会保留旧值（正确），
+    // 但显式下发空串容易让别的订阅方误清空，这里压根不带这个字段。
+    let mut payload = json!({ "token": token });
+    if !new_refresh.is_empty() {
+        payload["refreshToken"] = json!(new_refresh);
+    }
+    let _ = app.emit("auth:updated", payload);
+    RefreshOutcome::Rotated
 }
 
-/// 取一个可用 token：临期就先刷新，刷新失败再退回原 token（让服务端给出 401）。
-async fn usable_token(app: &AppHandle) -> String {
+/// 取一个可用 token。Err 表示「连旧令牌都没有，且这次刷新没成功」，
+/// 调用方必须按 outcome 区分：Transient 只让当前条目失败，绝不能全局清盘。
+async fn usable_token(app: &AppHandle) -> Result<String, RefreshOutcome> {
     let cfg = current_cfg(app);
-    if jwt_expired(&cfg.token) && refresh_token(app).await {
-        return current_cfg(app).token;
+    if should_attempt_refresh(&cfg.token) {
+        let outcome = refresh_token(app).await;
+        if outcome == RefreshOutcome::Rotated {
+            return Ok(current_cfg(app).token);
+        }
+        if cfg.token.is_empty() {
+            return Err(outcome);
+        }
     }
-    cfg.token
+    Ok(cfg.token)
 }
 
 /* ---------------- 上传 ---------------- */
@@ -414,6 +583,11 @@ fn fail(app: &AppHandle, id: &str, msg: &str) {
 }
 
 async fn upload_one(app: AppHandle, id: String) {
+    // kick 取出 id 到本函数真正执行之间，认证可能已被置闸。此时条目仍是 queued，
+    // 原样留着等重登续跑；标 failed 会白白丢掉用户排队的文件。
+    if app.state::<UploadState>().auth_blocked.load(Ordering::SeqCst) {
+        return;
+    }
     let (mut cfg, item) = {
         let st = app.state::<UploadState>();
         let g = st.inner.lock().unwrap();
@@ -424,11 +598,15 @@ async fn upload_one(app: AppHandle, id: String) {
         (g.cfg.clone(), it)
     };
 
+    // 条目没带目标库时绝不回退全局 cfg：那可能是上一个账号 / 上一次选的库，
+    // 静默回退会把文件传到别人的空间里（切库、换账号场景）。
+    if item.kb_id.is_empty() {
+        fail(&app, &id, "没有选择知识库");
+        return;
+    }
     // 用条目入队时定下的 kb_id，不用此刻的全局 cfg：全局 cfg 会被下一次入队刷新，
     // 用户切库后旧条目会串到新库去。tenant_id 同理取条目自己的身份租户。
-    if !item.kb_id.is_empty() {
-        cfg.kb_id = item.kb_id.clone();
-    }
+    cfg.kb_id = item.kb_id.clone();
     if item.tenant_id > 0 {
         cfg.tenant_id = item.tenant_id;
     }
@@ -483,14 +661,25 @@ async fn upload_one(app: AppHandle, id: String) {
         cfg.kb_id
     );
 
-    let mut body: Option<Value> = None;
-    for attempt in 0..2 {
-        let token = usable_token(&app).await;
-        if token.is_empty() {
-            let _ = app.emit("auth:expired", json!({}));
-            fail(&app, &id, "登录已过期，请重新登录");
-            return;
-        }
+    // 网络层重试与 401 重放各自计数。以前共用 for attempt in 0..2：一次连接重置
+    // 把 attempt 推到 1 后遇到首次 401，刷新成功 Retry 却已耗尽循环次数，
+    // 结果 body=None、文件被误标「上传没有完成」。现在循环直接返回成功响应体。
+    let mut network_retries = 0;
+    let mut retried_401 = false;
+    let v: Value = loop {
+        let token = match usable_token(&app).await {
+            Ok(t) => t,
+            // 续期请求没打通且手里没有旧令牌：只让这一个文件失败，绝不全局清盘
+            Err(RefreshOutcome::Transient) => {
+                fail(&app, &id, "网络暂不可用，续期未完成，请稍后重试");
+                return;
+            }
+            Err(_) => {
+                expire_auth(&app);
+                fail(&app, &id, "登录已过期，请重新登录");
+                return;
+            }
+        };
 
         let part = match multipart::Part::bytes(bytes.clone())
             .file_name(item.name.clone())
@@ -519,8 +708,9 @@ async fn upload_one(app: AppHandle, id: String) {
         let resp = match resp {
             Ok(r) => r,
             Err(e) => {
-                // 网络层错误重试一次（连接被重置之类）
-                if attempt == 0 {
+                // 网络层错误重试一次（连接被重置之类），不占用 401 重放配额
+                if network_retries < 1 {
+                    network_retries += 1;
                     tokio::time::sleep(Duration::from_millis(800)).await;
                     continue;
                 }
@@ -534,12 +724,26 @@ async fn upload_one(app: AppHandle, id: String) {
         let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
 
         if status == reqwest::StatusCode::UNAUTHORIZED {
-            if attempt == 0 && refresh_token(&app).await {
-                continue;
+            // 已经用新令牌重放过一次：不再刷新（免得白白消耗一次性轮换的
+            // refreshToken），只让这条失败，不全局清盘 —— 也可能是服务端临时问题。
+            if retried_401 {
+                fail(&app, &id, "续期后仍被拒绝，请稍后重试");
+                return;
             }
-            let _ = app.emit("auth:expired", json!({}));
-            fail(&app, &id, "登录已过期，请重新登录");
-            return;
+            retried_401 = true;
+            match decide_upload_401(refresh_token(&app).await) {
+                Upload401Action::Retry => continue,
+                // 续期请求本身没打通：只让这一个文件失败，绝不全局清盘踢登录
+                Upload401Action::FailTransient => {
+                    fail(&app, &id, "网络暂不可用，续期未完成，请稍后重试");
+                    return;
+                }
+                Upload401Action::Expire => {
+                    expire_auth(&app);
+                    fail(&app, &id, "登录已过期，请重新登录");
+                    return;
+                }
+            }
         }
         if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
             fail(&app, &id, &format!("超过服务端 {}MB 限制", MAX_FILE_MB));
@@ -577,16 +781,7 @@ async fn upload_one(app: AppHandle, id: String) {
             );
             return;
         }
-        body = Some(v);
-        break;
-    }
-
-    let v = match body {
-        Some(v) => v,
-        None => {
-            fail(&app, &id, "上传没有完成");
-            return;
-        }
+        break v;
     };
 
     // 重复文件在上面按 code 处理过了，走到这里的都是成功响应
@@ -636,15 +831,35 @@ async fn upload_one(app: AppHandle, id: String) {
 
 async fn poll_parse(app: AppHandle, id: String, knowledge_id: String, tenant_id: i64) {
     let started = Instant::now();
+    // 401 后允许刷新重试一次；不加限制时每次 401 都刷新成功会绕满 150 轮
+    let mut refreshed = false;
     // 服务端实测 20 秒内完成；给到 5 分钟，超时只提示不当作失败
     for _ in 0..150 {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
+        // 解析中的条目不能只等服务端返回 401：令牌被清后服务端也可能回 403 或 200，
+        // 那样状态会一直卡在 parsing。按闸门直接标失败。
+        if app.state::<UploadState>().auth_blocked.load(Ordering::SeqCst) {
+            fail(&app, &id, "登录已过期，请重新登录");
+            return;
+        }
         let cfg = current_cfg(&app);
         if cfg.server_url.is_empty() {
             return;
         }
-        let token = usable_token(&app).await;
+        let token = match usable_token(&app).await {
+            Ok(t) => t,
+            // 没有旧令牌且续期没打通：只让这条解析任务失败，不动登录态
+            Err(RefreshOutcome::Transient) => {
+                fail(&app, &id, "网络暂不可用，续期未完成，请稍后重试");
+                return;
+            }
+            Err(_) => {
+                expire_auth(&app);
+                fail(&app, &id, "登录已过期，请重新登录");
+                return;
+            }
+        };
         let url = format!("{}/knowledge/{}", cfg.base(), knowledge_id);
         let mut req = client()
             .get(&url)
@@ -657,16 +872,36 @@ async fn poll_parse(app: AppHandle, id: String, knowledge_id: String, tenant_id:
 
         let v: Value = match resp {
             Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => {
-                if refresh_token(&app).await {
-                    continue;
+                // 已经用新令牌重放过一次：不再刷新，也不全局清盘
+                if refreshed {
+                    fail(&app, &id, "续期后仍被拒绝，请稍后重试");
+                    return;
                 }
-                let _ = app.emit("auth:expired", json!({}));
-                return;
+                refreshed = true;
+                match decide_upload_401(refresh_token(&app).await) {
+                    Upload401Action::Retry => continue,
+                    // 续期请求没打通：这条解析任务先失败，不影响其它条目和登录态
+                    Upload401Action::FailTransient => {
+                        fail(&app, &id, "网络暂不可用，续期未完成，请稍后重试");
+                        return;
+                    }
+                    Upload401Action::Expire => {
+                        // 解析中的条目此前只是 return，状态永远卡在 parsing；现在明确标失败
+                        expire_auth(&app);
+                        fail(&app, &id, "登录已过期，请重新登录");
+                        return;
+                    }
+                }
             }
-            Ok(r) => match r.json().await {
-                Ok(v) => v,
-                Err(_) => continue,
-            },
+            Ok(r) => {
+                // 服务端已正常响应过，之后的 401 允许再刷一次，别让 150 轮里
+                // 一次刷新把后续所有 401 都锁死成「重放失败」。
+                refreshed = false;
+                match r.json().await {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                }
+            }
             Err(_) => continue,
         };
 
@@ -720,6 +955,22 @@ async fn poll_parse(app: AppHandle, id: String, knowledge_id: String, tenant_id:
     });
 }
 
+/// 闸门开启时一个 queued 都不取；抽成纯函数便于单测排队条目确实被原样保留。
+fn pick_next(blocked: bool, items: &[UploadItem]) -> Option<String> {
+    if blocked {
+        return None;
+    }
+    items
+        .iter()
+        .find(|i| i.status == "queued")
+        .map(|i| i.id.clone())
+}
+
+/// 收尾时是否补一次 kick：还有 queued 且闸门未开才继续，否则会无限 spawn。
+fn should_resume_kick(blocked: bool, items: &[UploadItem]) -> bool {
+    !blocked && items.iter().any(|i| i.status == "queued")
+}
+
 pub fn kick(app: AppHandle) {
     {
         let st = app.state::<UploadState>();
@@ -732,10 +983,10 @@ pub fn kick(app: AppHandle) {
             let next = {
                 let st = app.state::<UploadState>();
                 let g = st.inner.lock().unwrap();
-                g.items
-                    .iter()
-                    .find(|i| i.status == "queued")
-                    .map(|i| i.id.clone())
+                pick_next(
+                    st.auth_blocked.load(Ordering::SeqCst),
+                    &g.items,
+                )
             };
             match next {
                 Some(id) => upload_one(app.clone(), id).await,
@@ -746,13 +997,14 @@ pub fn kick(app: AppHandle) {
             let st = app.state::<UploadState>();
             st.busy.store(false, Ordering::SeqCst);
         }
-        // 收尾瞬间可能刚好又排进来一个，补一次
-        let more = {
+        // 收尾瞬间可能刚好又排进来一个，补一次；认证失效时别再自我唤醒，
+        // 否则 queued 还在 + blocked 为 true 会无限 spawn kick。
+        let resume = {
             let st = app.state::<UploadState>();
             let g = st.inner.lock().unwrap();
-            g.items.iter().any(|i| i.status == "queued")
+            should_resume_kick(st.auth_blocked.load(Ordering::SeqCst), &g.items)
         };
-        if more {
+        if resume {
             kick(app);
         }
     });
@@ -776,19 +1028,34 @@ pub fn upload_enqueue(
     {
         let st = app.state::<UploadState>();
         let mut g = st.inner.lock().unwrap();
-        // 配置每次提交都刷新一遍：换了知识库/重新登录后无需重启
-        if cfg.usable() {
-            g.cfg = cfg.clone();
+        // 令牌由 Rust 单点维护（登录时 upload_set_cfg 写入、刷新成功时 refresh_token 写入）。
+        // 这里只在自己为空时用前端快照补齐（冷启动 / 从未同步过）：前端 localStorage
+        // 可能还没收到异步的 auth:updated，无条件覆盖会把刚轮换的新令牌
+        // 改回已作废的旧值，下一次请求必定 401。
+        if g.cfg.token.is_empty() && !cfg.token.is_empty() {
+            g.cfg.token = cfg.token.clone();
+            g.cfg.refresh_token = cfg.refresh_token.clone();
         }
-        if g.cfg.token.is_empty() {
+        if !cfg.server_url.is_empty() {
+            g.cfg.server_url = cfg.server_url.clone();
+        }
+        // 目标库与身份租户属于「本次提交」的配置，条目会自带，随时可覆盖；
+        // 新账号暂时没有自有库时 kbId 为空，此时条目在 upload_one 里直接判失败，
+        // 不再回退 g.cfg 里可能属于上一个账号的旧库。
+        if cfg.usable() {
+            g.cfg.tenant_id = cfg.tenant_id;
+            g.cfg.kb_id = cfg.kb_id.clone();
+        }
+        if g.cfg.token.is_empty() || st.auth_blocked.load(Ordering::SeqCst) {
             return json!({ "queued": 0, "exists": 0, "skipped": 0, "ids": [], "error": "登录已过期，请重新登录" });
         }
         if g.items.len() >= MAX_BATCH {
             return json!({ "queued": 0, "exists": 0, "skipped": 0, "ids": [], "error": "队列太长，先清一下" });
         }
-        let tenant_id = if cfg.tenant_id > 0 { cfg.tenant_id } else { g.cfg.tenant_id };
-        // 每条固化自己的目标库：全局 cfg 会被后续入队刷新，切库后旧条目不能串库
-        let kb_id = if !cfg.kb_id.is_empty() { cfg.kb_id.clone() } else { g.cfg.kb_id.clone() };
+        // 身份租户与目标库只认本次提交的值，绝不回退到 g.cfg：
+        // 回退会把新账号的文件传到上一个账号的库里。
+        let tenant_id = cfg.tenant_id;
+        let kb_id = cfg.kb_id.clone();
 
         let mut fresh: Vec<(String, String, u64)> = Vec::new();
         for p in paths.iter().filter(|p| !p.is_empty()) {
@@ -989,10 +1256,66 @@ pub async fn pick_paths(app: AppHandle, kind: Option<String>) -> Value {
 
 #[tauri::command]
 pub fn upload_set_cfg(app: AppHandle, cfg: UploadCfg) -> Value {
-    let st = app.state::<UploadState>();
-    let mut g = st.inner.lock().unwrap();
-    g.cfg = cfg;
+    let valid = !cfg.token.is_empty();
+    let has_queued = {
+        let st = app.state::<UploadState>();
+        let mut g = st.inner.lock().unwrap();
+        g.cfg = cfg;
+        if valid {
+            // 登录成功（前端 await syncRustCfg）时解除过期闸门，让保留的 queued 续跑。
+            // 静默续期不走这里：refresh_token() 成功分支会自己清闸并 kick。
+            st.auth_blocked.store(false, Ordering::SeqCst);
+        }
+        g.items.iter().any(|i| i.status == "queued")
+    };
+    // 过期时特意保留下来的排队条目，恢复令牌后自动续跑，不用用户手动点重试
+    if valid && has_queued {
+        kick(app);
+    }
     json!({ "ok": true })
+}
+
+/// refresh_auth 的返回体抽成纯函数：失败时绝不能带 token；
+/// transient 必须单独标记，前端据此「不清盘、不跳登录、按网络错误处理」。
+fn refresh_result_payload(outcome: RefreshOutcome, cfg: &UploadCfg) -> Value {
+    match outcome {
+        RefreshOutcome::Rotated => {
+            let mut out = json!({ "ok": true });
+            if !cfg.token.is_empty() {
+                out["token"] = json!(cfg.token);
+                // 空 refreshToken 不下发：前端保留旧值，显式空串容易让别的订阅方误清空
+                if !cfg.refresh_token.is_empty() {
+                    out["refreshToken"] = json!(cfg.refresh_token);
+                }
+            }
+            out
+        }
+        RefreshOutcome::Invalid => json!({ "ok": false, "reason": "invalid" }),
+        RefreshOutcome::Transient => json!({ "ok": false, "transient": true }),
+    }
+}
+
+/// 前端 401 时的唯一续期入口：刷新仍由 Rust 单飞执行，避免两端各自刷新
+/// 把一次性轮换的 refresh_token 互相作废。
+/// 直接回传新令牌，而不是只依赖 auth:updated 事件——invoke 返回时 webview
+/// 可能还没收到那条异步事件，重放请求会拿到旧 token 再撞一次 401。
+///
+/// cfg 是前端 localStorage 的快照：冷启动时 Rust 侧还没有任何令牌，不补齐就会把
+/// 「access token 过期但 refresh token 仍有效」误判成必须重新登录。
+/// 只有 Invalid 才置闸清盘；Transient 保留令牌与排队条目，前端按网络错误处理。
+#[tauri::command]
+pub async fn refresh_auth(app: AppHandle, cfg: Option<UploadCfg>) -> Value {
+    if let Some(snap) = cfg.as_ref() {
+        let st = app.state::<UploadState>();
+        let mut g = st.inner.lock().unwrap();
+        prime_cfg_from_snapshot(&mut g.cfg, snap);
+    }
+    let outcome = refresh_token(&app).await;
+    if outcome == RefreshOutcome::Invalid {
+        // 不广播，前端 broadcast('auth:expired') 是唯一事件源
+        block_auth(&app);
+    }
+    refresh_result_payload(outcome, &current_cfg(&app))
 }
 
 #[cfg(test)]
@@ -1091,5 +1414,219 @@ mod tests {
         // 都没有时返回空串，调用方据此判失败，而不是写入空令牌
         assert_eq!(pick_field(&json!({"success": true}), &["token"]), "");
         assert_eq!(pick_field(&json!({"token": ""}), &["token"]), "");
+    }
+
+    /* ---------------- 统一认证层（方案 B）回归 ---------------- */
+
+    fn auth_cfg(token: &str, refresh: &str, server: &str) -> UploadCfg {
+        UploadCfg {
+            token: token.into(),
+            refresh_token: refresh.into(),
+            server_url: server.into(),
+            ..Default::default()
+        }
+    }
+
+    /// 冷启动：Rust 侧 cfg 全空，前端快照必须把刷新所需的三个字段补齐。
+    /// 这是「access 过期但 refresh 有效却被踢去登录」的直接回归。
+    #[test]
+    fn prime_cfg_fills_empty_fields_on_cold_start() {
+        let mut cur = UploadCfg::default();
+        let snap = auth_cfg("expired.jwt", "refresh-1", "https://kb.example.com");
+        assert!(prime_cfg_from_snapshot(&mut cur, &snap));
+        assert_eq!(cur.token, "expired.jwt");
+        assert_eq!(cur.refresh_token, "refresh-1");
+        assert_eq!(cur.server_url, "https://kb.example.com");
+        assert_eq!(cur.base(), "https://kb.example.com/api/v1");
+        // 重复同步不改状态；kbId / tenantId 不属于刷新所需字段，不能从别处串进来
+        assert!(!prime_cfg_from_snapshot(&mut cur, &snap));
+        assert_eq!(cur.tenant_id, 0);
+        assert_eq!(cur.kb_id, "");
+    }
+
+    /// 另一个窗口刚刷新成功：绝不能被前端的旧快照覆盖回去。
+    #[test]
+    fn prime_cfg_never_overwrites_a_fresher_token() {
+        let mut cur = auth_cfg("new.jwt", "refresh-2", "https://kb.example.com");
+        let stale = auth_cfg("old.jwt", "refresh-1", "http://old.example.com");
+        assert!(!prime_cfg_from_snapshot(&mut cur, &stale));
+        assert_eq!(cur.token, "new.jwt");
+        assert_eq!(cur.refresh_token, "refresh-2");
+        assert_eq!(cur.server_url, "https://kb.example.com");
+    }
+
+    /// 只补缺的那个字段，不能整份覆盖。
+    #[test]
+    fn prime_cfg_is_field_local() {
+        let mut cur = auth_cfg("", "refresh-2", "");
+        let snap = auth_cfg("t", "refresh-1", "https://kb.example.com");
+        assert!(prime_cfg_from_snapshot(&mut cur, &snap));
+        assert_eq!(cur.token, "t");
+        assert_eq!(cur.refresh_token, "refresh-2", "非空字段必须保留");
+        assert_eq!(cur.server_url, "https://kb.example.com");
+    }
+
+    /// 过期瞬间：在途标失败，排队原样保留，已完成的不动。
+    #[test]
+    fn mark_auth_failure_only_touches_in_flight_items() {
+        let mut items: Vec<UploadItem> = (0..6)
+            .map(|i| UploadItem::new(format!("/tmp/f{i}"), format!("f{i}"), 1, 10009))
+            .collect();
+        items[0].status = "queued".into();
+        items[1].status = "uploading".into();
+        items[2].status = "parsing".into();
+        items[3].status = "done".into();
+        items[4].status = "exists".into();
+        items[5].status = "failed".into();
+        items[1].progress = 60;
+        items[2].progress = 90;
+
+        let ids = mark_auth_failure(&mut items);
+        assert_eq!(ids, vec![items[1].id.clone(), items[2].id.clone()]);
+        assert_eq!(items[0].status, "queued", "排队条目必须原样保留等重登续跑");
+        for i in [1, 2] {
+            assert_eq!(items[i].status, "failed");
+            assert_eq!(items[i].progress, 0);
+            assert_eq!(items[i].error, "登录已过期，请重新登录");
+        }
+        assert_eq!(items[3].status, "done");
+        assert_eq!(items[4].status, "exists");
+        assert_eq!(items[5].status, "failed");
+        assert_eq!(items[5].error, "", "本就失败的条目不该被改文案");
+        // 二次触发不能再返回同一批 id（否则会重复广播状态）
+        assert!(mark_auth_failure(&mut items).is_empty());
+    }
+
+    /// 闸门开启后一个 queued 都不取；否则取最早的那个。
+    #[test]
+    fn pick_next_respects_auth_gate() {
+        let mut a = UploadItem::new("/tmp/a".into(), "a".into(), 1, 1);
+        let b = UploadItem::new("/tmp/b".into(), "b".into(), 1, 1);
+        a.status = "done".into();
+        let items = vec![a, b.clone()];
+        assert_eq!(pick_next(false, &items), Some(b.id.clone()));
+        assert_eq!(pick_next(true, &items), None, "过期闸门开启时不能消费排队条目");
+        assert_eq!(items[1].status, "queued", "pick_next 不该改动条目本身");
+    }
+
+    /// 收尾补 kick：有 queued 且闸门未开才继续，否则会无限 spawn。
+    #[test]
+    fn should_resume_kick_only_when_queued_remains() {
+        let queued = UploadItem::new("/tmp/q".into(), "q".into(), 1, 1);
+        let mut done = UploadItem::new("/tmp/d".into(), "d".into(), 1, 1);
+        done.status = "done".into();
+        let mut failed = UploadItem::new("/tmp/f".into(), "f".into(), 1, 1);
+        failed.status = "failed".into();
+        assert!(should_resume_kick(false, &[queued.clone()]));
+        assert!(!should_resume_kick(true, &[queued]));
+        // 非空 != 还有排队条目。写成 !items.is_empty() 会在这里无限 spawn kick。
+        assert!(!should_resume_kick(false, &[done, failed]));
+        assert!(!should_resume_kick(false, &[]));
+    }
+
+    /// 多个并发 401 只有一个触发者广播 auth:expired；重登清闸后能再次广播。
+    #[test]
+    fn claim_auth_expiry_fires_once() {
+        let flag = AtomicBool::new(false);
+        assert!(claim_auth_expiry(&flag));
+        assert!(!claim_auth_expiry(&flag));
+        assert!(!claim_auth_expiry(&flag));
+        flag.store(false, Ordering::SeqCst);
+        assert!(claim_auth_expiry(&flag));
+    }
+
+    /// refresh_auth 的返回体三态：失败不能泄漏令牌，transient 必须单独标记。
+    #[test]
+    fn refresh_result_payload_contract() {
+        let cur = auth_cfg("t", "r", "s");
+        let ok = refresh_result_payload(RefreshOutcome::Rotated, &cur);
+        assert_eq!(ok["ok"], json!(true));
+        assert_eq!(ok["token"], json!("t"));
+        assert_eq!(ok["refreshToken"], json!("r"));
+
+        let invalid = refresh_result_payload(RefreshOutcome::Invalid, &cur);
+        assert_eq!(invalid, json!({ "ok": false, "reason": "invalid" }));
+        assert!(invalid.get("token").is_none());
+        assert!(invalid.get("transient").is_none(), "明确拒绝不能标成暂时故障");
+
+        let transient = refresh_result_payload(RefreshOutcome::Transient, &cur);
+        assert_eq!(transient, json!({ "ok": false, "transient": true }));
+        assert!(transient.get("token").is_none(), "暂时故障不能下发旧令牌");
+
+        let no_rotation = auth_cfg("t", "", "s");
+        let ok2 = refresh_result_payload(RefreshOutcome::Rotated, &no_rotation);
+        assert_eq!(ok2["token"], json!("t"));
+        assert!(ok2.get("refreshToken").is_none(), "空刷新令牌不能下发");
+
+        assert_eq!(
+            refresh_result_payload(RefreshOutcome::Rotated, &UploadCfg::default()),
+            json!({ "ok": true })
+        );
+    }
+
+    #[test]
+    fn refresh_status_classifies_transient_vs_invalid() {
+        use reqwest::StatusCode;
+        for s in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN, StatusCode::BAD_REQUEST] {
+            assert_eq!(classify_refresh_status(s), RefreshOutcome::Invalid, "{s}");
+        }
+        for s in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert_eq!(classify_refresh_status(s), RefreshOutcome::Transient, "{s}");
+        }
+    }
+
+    #[test]
+    fn refresh_reuse_check_needs_a_nonempty_new_token() {
+        let before = auth_cfg("old", "r0", "s");
+        let rotated = auth_cfg("new", "r1", "s");
+        assert!(refresh_was_rotated(&before, &rotated));
+        assert!(!refresh_was_rotated(&before, &before), "没人刷新过不能复用结果");
+        assert!(
+            !refresh_was_rotated(&before, &auth_cfg("", "", "s")),
+            "令牌被清空不能当成刷新成功放行"
+        );
+        assert!(refresh_was_rotated(&UploadCfg::default(), &rotated));
+    }
+
+    /// 断网 / 5xx 的续期失败只能让当前条目失败，绝不能置闸清盘。
+    #[test]
+    fn upload_401_actions_keep_session_on_transient_failure() {
+        assert_eq!(decide_upload_401(RefreshOutcome::Rotated), Upload401Action::Retry);
+        assert_eq!(decide_upload_401(RefreshOutcome::Transient), Upload401Action::FailTransient);
+        assert_eq!(decide_upload_401(RefreshOutcome::Invalid), Upload401Action::Expire);
+    }
+
+    /// 空 token 必须触发刷新，否则冷启动 / 身份被清后会直接 expire_auth，
+    /// 把一次网络抖动变成全局清盘踢登录。
+    #[test]
+    fn empty_token_still_attempts_refresh() {
+        assert!(should_attempt_refresh(""));
+        assert!(should_attempt_refresh("h.eyJleHAiOjEwMDB9.s"));
+        assert!(!should_attempt_refresh("h.eyJleHAiOjk5OTk5OTk5OTk5fQ.s"));
+    }
+
+    /// 契约守卫：binary crate 构造不了 AppHandle 做集成测试，用源码断言钉住
+    /// 三态接线，避免「把接线删了纯函数单测仍全绿」。
+    #[test]
+    fn refresh_auth_wiring_contract() {
+        let src = include_str!("upload.rs");
+        assert!(
+            src.contains("if outcome == RefreshOutcome::Invalid"),
+            "refresh_auth 必须只在 Invalid 时置闸，Transient 不得清盘"
+        );
+        assert!(
+            src.contains("Err(RefreshOutcome::Transient) => {"),
+            "usable_token 的 Err 分支必须区分 Transient 与 Invalid"
+        );
+        assert!(
+            src.contains("let mut network_retries = 0;")
+                && src.contains("let mut retried_401 = false;"),
+            "网络重试与 401 重放必须各自计数，不能共用一个 attempt"
+        );
     }
 }
