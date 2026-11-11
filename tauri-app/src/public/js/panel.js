@@ -530,6 +530,14 @@ async function init() {
   el.inServer.value = state.serverUrl || 'https://knowledge.xinyeonline.com.cn'
   el.inEmail.value = state.email || ''
   if (state.loggedIn) {
+    // 启动校验：只有明确的 401 才回登录页；断网 / 5xx / 超时放行，避免离线误踢。
+    // 校验本身复用统一认证层，refreshToken 还有效时会在这一步静默续期。
+    const v = await window.pet.validateSession?.()
+    if (v && v.expired) {
+      show('login')
+      el.inEmail.focus()
+      return
+    }
     await enterMain()
   } else {
     show('login')
@@ -2070,12 +2078,25 @@ $('btnClearQueue').addEventListener('click', async () => {
   renderQueue(queueItems)
 })
 
-// 令牌彻底过期（自动续期也失败）：退回登录页，否则接下来每个操作都只会静默失败
-window.pet.onAuthExpired?.(() => {
+// 令牌彻底过期（自动续期也失败）：退回登录页。
+// 身份字段的写盘清理由 tauri-bridge 的统一认证层负责（两个窗口各自收到事件），
+// 这里只做 UI：清空聊天 / 会话 / 暂存，避免重登后看到上一个账号的内容。
+function applyAuthExpired() {
   toast('登录已过期，请重新登录', 'warn')
   state = { ...(state || {}), loggedIn: false, token: '' }
+  el.chat.innerHTML = ''
+  sessions.items = []
+  sessions.total = 0
+  sessions.activeId = ''
+  el.sessionList.innerHTML = ''
+  shelf.length = 0
+  attachList = []
+  renderShelf()
+  renderAttachStrip()
+  el.storeSheet.classList.add('hidden')
   show('login')
-})
+}
+window.pet.onAuthExpired?.(applyAuthExpired)
 
 /* ---------------- 更多菜单 / 关闭 ---------------- */
 
