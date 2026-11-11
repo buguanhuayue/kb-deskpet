@@ -134,6 +134,7 @@ fn main() {
             upload::upload_clear,
             upload::upload_retry,
             upload::upload_set_cfg,
+            upload::refresh_auth,
             upload::describe_paths,
             upload::pick_paths,
             update::app_version,

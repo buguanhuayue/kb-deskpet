@@ -17,6 +17,8 @@ tauri = { version = "2", features = [] }
 # multipart 用于真实文件上传；插件已经把 reqwest 重新导出，不必再引入一份
 tauri-plugin-http = { version = "2", features = ["multipart", "json"] }
 tauri-plugin-store = "2"
-tokio = { version = "1", features = ["time"] }
+# sync 用于 refresh_token 的跨端互斥锁：刷新令牌一次性轮换，前端与上传任务
+# 绝不能各自同时发起刷新，否则后到者拿已作废的旧令牌，会把所有人误踢到登录页
+tokio = { version = "1", features = ["time", "sync"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
