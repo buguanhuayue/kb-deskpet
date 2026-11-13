@@ -1006,6 +1006,73 @@ function addAssistantStatic() {
   return { wrap, b, status: null, text, refs, refData: [], finished: true }
 }
 
+/* ---------------- 引用图片 ----------------
+ * 图片类引用（image_caption / image_ocr / image_vector）的 image_info 是 JSON 数组字符串，
+ * 元素形如 { url: "resource://...", caption, ocr_text }。caption 与 ocr 是同一张图的
+ * 两份 chunk，共享同一个 resource:// 句柄。图片字节经 bridge 的 fetchRefImage
+ * （KB 文件代理 + 身份租户头）取回。image_info 为空或拿不到 kb_id 时退回文字 chip。 */
+const IMAGE_CHUNK_TYPES = new Set(['image_caption', 'image_ocr', 'image_vector'])
+
+function parseRefImage(r) {
+  if (!r || !IMAGE_CHUNK_TYPES.has(r.chunk_type)) return null
+  let info = null
+  try { info = JSON.parse(r.image_info || 'null') } catch {}
+  const item = Array.isArray(info) ? info[0] : (info && typeof info === 'object' ? info : null)
+  const url = item && typeof item.url === 'string' ? item.url : ''
+  if (!url || !r.knowledge_base_id) return null
+  return {
+    url,
+    kbId: r.knowledge_base_id,
+    caption: String(item.caption || '').trim(),
+    title: r.knowledge_title || ''
+  }
+}
+
+/** summary 等非图片 chunk 不带 image_info，但 jpg/png 这类文件的 summary chunk
+ *  必有同库同文件名的 image_caption/image_ocr 兄弟 chunk 带图——继承它的图，
+ *  让图片文件的 summary chip 也能出缩略图。inherited 标记用于 ref-body 追加摘要正文。 */
+function resolveRefImage(r, refs) {
+  const direct = parseRefImage(r)
+  if (direct || !r || !Array.isArray(refs)) return direct
+  for (const other of refs) {
+    if (other === r) continue
+    if ((other.knowledge_base_id || '') !== (r.knowledge_base_id || '')) continue
+    if ((other.knowledge_title || '') !== (r.knowledge_title || '')) continue
+    const img = parseRefImage(other)
+    if (img) return Object.assign({}, img, { inherited: true })
+  }
+  return null
+}
+
+// 缩略图懒加载：chip 进入聊天区视口附近才开始取图，失败退回纯文字 chip
+let refThumbObserver = null
+function getRefThumbObserver() {
+  if (refThumbObserver) return refThumbObserver
+  refThumbObserver = new IntersectionObserver((entries) => {
+    for (const en of entries) {
+      if (!en.target.isConnected) { refThumbObserver.unobserve(en.target); continue }
+      if (!en.isIntersecting) continue
+      refThumbObserver.unobserve(en.target)
+      const info = en.target.__refImg
+      if (info) fillRefThumb(en.target, info)
+    }
+  }, { root: el.chat, rootMargin: '160px' })
+  return refThumbObserver
+}
+
+function fillRefThumb(thumb, img) {
+  window.pet.fetchRefImage({ kbId: img.kbId, filePath: img.url }).then((res) => {
+    // 会话切换后 chip 可能已被 innerHTML='' 摘掉，别往断开的树上挂图
+    if (!res || !res.ok || !thumb.isConnected) return
+    const image = document.createElement('img')
+    image.alt = ''
+    image.onload = () => thumb.classList.add('loaded')
+    image.onerror = () => thumb.classList.add('broken')
+    image.src = res.objectUrl
+    thumb.appendChild(image)
+  }).catch(() => thumb.classList.add('broken'))
+}
+
 function renderRefs(s, refs) {
   s.refData = refs || []
   s.refs.innerHTML = ''
@@ -1017,8 +1084,24 @@ function renderRefs(s, refs) {
   s.refData.slice(0, 6).forEach((r, i) => {
     const chip = document.createElement('button')
     chip.className = 'ref-chip'
-    chip.textContent = `[${i + 1}] ${r.knowledge_title || '片段'}`
-    chip.title = '点开看原文'
+    const img = resolveRefImage(r, s.refData)
+    if (img) {
+      chip.classList.add('ref-chip--img')
+      chip.title = img.title || '点开看图'
+      const thumb = document.createElement('span')
+      thumb.className = 'ref-thumb'
+      thumb.__refImg = img
+      thumb.appendChild(Object.assign(document.createElement('span'), { className: 'ref-thumb-ph' }))
+      const label = document.createElement('span')
+      label.className = 'ref-chip-label'
+      label.textContent = `[${i + 1}] ${img.title || '图片'}`
+      chip.appendChild(thumb)
+      chip.appendChild(label)
+      getRefThumbObserver().observe(thumb)
+    } else {
+      chip.textContent = `[${i + 1}] ${r.knowledge_title || '片段'}`
+      chip.title = '点开看原文'
+    }
     chip.addEventListener('click', () => toggleRefBody(s, i))
     s.refs.appendChild(chip)
   })
@@ -1037,10 +1120,259 @@ function toggleRefBody(s, i) {
   const body = document.createElement('div')
   body.className = 'ref-body'
   body.dataset.idx = String(i)
-  // 片段原文同样走 Markdown 渲染（mdToHtml 先转义，安全）；在 .bubble-a 内，样式复用
-  body.innerHTML = mdToHtml((r.content || '').slice(0, 1200))
+  const img = resolveRefImage(r, s.refData)
+  if (img) {
+    // 图片类引用：大图 + 图注，点大图进灯箱看全图
+    body.classList.add('ref-body--img')
+    const holder = document.createElement('div')
+    holder.className = 'ref-img-holder'
+    const ph = document.createElement('div')
+    ph.className = 'ref-img-loading'
+    ph.textContent = '图片加载中…'
+    holder.appendChild(ph)
+    window.pet.fetchRefImage({ kbId: img.kbId, filePath: img.url }).then((res) => {
+      if (!holder.isConnected) return
+      if (!res || !res.ok) {
+        ph.textContent = '图片加载失败'
+        holder.classList.add('failed')
+        return
+      }
+      ph.remove()
+      const image = document.createElement('img')
+      image.className = 'ref-img'
+      image.alt = img.title || '引用图片'
+      image.title = '点击查看全图'
+      image.addEventListener('click', () => openRefLightbox(s, img.url))
+      holder.appendChild(image)
+      image.src = res.objectUrl
+    }).catch(() => {
+      if (!holder.isConnected) return
+      ph.textContent = '图片加载失败'
+      holder.classList.add('failed')
+    })
+    body.appendChild(holder)
+    if (img.caption) {
+      const cap = document.createElement('div')
+      cap.className = 'ref-img-caption'
+      cap.textContent = img.caption
+      body.appendChild(cap)
+    }
+    if (img.inherited) {
+      // 继承图的 summary chunk 自带文字摘要，别弄丢：图注下面接着显示
+      const sum = document.createElement('div')
+      sum.className = 'ref-img-caption ref-img-summary'
+      sum.innerHTML = mdToHtml((r.content || '').slice(0, 1200))
+      body.appendChild(sum)
+    }
+  } else {
+    // 片段原文同样走 Markdown 渲染（mdToHtml 先转义，安全）；在 .bubble-a 内，样式复用
+    body.innerHTML = mdToHtml((r.content || '').slice(0, 1200))
+  }
   s.refs.after(body)
   s.refBody = body
+}
+
+/* ---------------- 引用图片灯箱 ----------------
+ * 纯 DOM 实现：全屏遮罩 + 滚轮缩放（以光标为锚）+ 拖拽平移 + 双击/按钮复原 +
+ * ESC / 点遮罩关闭 + 多图切换。图片字节复用 fetchRefImage 的 blob 缓存。 */
+let lbRoot = null
+let lbImg = null
+let lbMsg = null
+let lbCaption = null
+let lbCounter = null
+let lbBtnPrev = null
+let lbBtnNext = null
+let lbItems = []
+let lbIndex = 0
+let lbScale = 1
+let lbX = 0
+let lbY = 0
+let lbDrag = null
+let lbDragMoved = 0
+let lbKeyHandler = null
+let lbReqSeq = 0
+
+function ensureLightbox() {
+  if (lbRoot) return
+  lbRoot = document.createElement('div')
+  lbRoot.className = 'lb-overlay hidden'
+  const stage = document.createElement('div')
+  stage.className = 'lb-stage'
+  lbImg = document.createElement('img')
+  lbImg.className = 'lb-img'
+  lbImg.draggable = false
+  lbImg.alt = ''
+  lbImg.onload = () => { lbImg.classList.remove('loading'); lbMsg.classList.add('hidden') }
+  lbImg.onerror = () => { lbImg.classList.remove('loading'); showLbMsg('图片加载失败') }
+  stage.appendChild(lbImg)
+  lbMsg = document.createElement('div')
+  lbMsg.className = 'lb-msg hidden'
+  stage.appendChild(lbMsg)
+  const closeBtn = document.createElement('button')
+  closeBtn.className = 'lb-btn lb-close'
+  closeBtn.textContent = '×'
+  closeBtn.title = '关闭 (Esc)'
+  const navWrap = document.createElement('div')
+  navWrap.className = 'lb-nav hidden'
+  lbBtnPrev = document.createElement('button')
+  lbBtnPrev.className = 'lb-btn'
+  lbBtnPrev.textContent = '‹'
+  lbBtnPrev.title = '上一张 (←)'
+  lbBtnNext = document.createElement('button')
+  lbBtnNext.className = 'lb-btn'
+  lbBtnNext.textContent = '›'
+  lbBtnNext.title = '下一张 (→)'
+  navWrap.appendChild(lbBtnPrev)
+  navWrap.appendChild(lbBtnNext)
+  const foot = document.createElement('div')
+  foot.className = 'lb-foot'
+  lbCaption = document.createElement('div')
+  lbCaption.className = 'lb-caption'
+  lbCounter = document.createElement('div')
+  lbCounter.className = 'lb-counter'
+  foot.appendChild(lbCaption)
+  foot.appendChild(lbCounter)
+  lbRoot.appendChild(stage)
+  lbRoot.appendChild(navWrap)
+  lbRoot.appendChild(closeBtn)
+  lbRoot.appendChild(foot)
+  document.body.appendChild(lbRoot)
+
+  // 滚轮缩放：以光标为锚点。transform: translate+scale 下，保持光标下的内容点不动。
+  lbRoot.addEventListener('wheel', (e) => {
+    e.preventDefault()
+    lbZoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15)
+  }, { passive: false })
+
+  // 拖拽平移（pointer 事件，鼠标/触控板通吃）。
+  // setPointerCapture 之后 pointerup 的 target 恒为 lbRoot，所以「能不能点关」
+  // 必须以 pointerdown 时的起点判断，不能看 pointerup 的 target。
+  lbRoot.addEventListener('pointerdown', (e) => {
+    // 只在遮罩空白处和图片上起拖；按钮/图注交给它们自己的 click
+    if (e.target !== lbRoot && e.target !== lbImg) return
+    lbDrag = { x: e.clientX, y: e.clientY, ox: lbX, oy: lbY, closeOK: e.target === lbRoot }
+    lbDragMoved = 0
+    lbRoot.classList.add('dragging')
+    lbRoot.setPointerCapture(e.pointerId)
+  })
+  lbRoot.addEventListener('pointermove', (e) => {
+    if (!lbDrag) return
+    const dx = e.clientX - lbDrag.x
+    const dy = e.clientY - lbDrag.y
+    lbDragMoved = Math.max(lbDragMoved, Math.abs(dx) + Math.abs(dy))
+    lbX = lbDrag.ox + dx
+    lbY = lbDrag.oy + dy
+    applyLbTransform()
+  })
+  lbRoot.addEventListener('pointerup', () => {
+    const drag = lbDrag
+    lbDrag = null
+    lbRoot.classList.remove('dragging')
+    // 在遮罩空白处单击（没拖动过）→ 关闭；点图片不关（要留给双击缩放）
+    if (drag && drag.closeOK && lbDragMoved < 5) closeLightbox()
+  })
+  lbRoot.addEventListener('dblclick', () => lbResetView())
+  lbBtnPrev.addEventListener('click', () => showLbItem(lbIndex - 1))
+  lbBtnNext.addEventListener('click', () => showLbItem(lbIndex + 1))
+  closeBtn.addEventListener('click', closeLightbox)
+
+  lbKeyHandler = (e) => {
+    if (lbRoot.classList.contains('hidden')) return
+    if (e.key === 'Escape') closeLightbox()
+    else if (e.key === 'ArrowLeft') showLbItem(lbIndex - 1)
+    else if (e.key === 'ArrowRight') showLbItem(lbIndex + 1)
+  }
+  document.addEventListener('keydown', lbKeyHandler)
+}
+
+function applyLbTransform() {
+  lbImg.style.transform = `translate(${lbX}px, ${lbY}px) scale(${lbScale})`
+}
+
+function lbResetView() {
+  lbScale = 1
+  lbX = 0
+  lbY = 0
+  applyLbTransform()
+}
+
+function lbZoomAt(mouseX, mouseY, factor) {
+  const rect = lbImg.getBoundingClientRect()
+  // 未变换中心 = 当前 rect 中心减去平移量
+  const c0x = rect.left + rect.width / 2 - lbX
+  const c0y = rect.top + rect.height / 2 - lbY
+  const s2 = Math.min(6, Math.max(0.2, lbScale * factor))
+  if (s2 === lbScale) return
+  const px = (mouseX - c0x - lbX) / lbScale
+  const py = (mouseY - c0y - lbY) / lbScale
+  lbX += px * (lbScale - s2)
+  lbY += py * (lbScale - s2)
+  lbScale = s2
+  if (lbScale === 1) { lbX = 0; lbY = 0 } // 回到 1x 时吸附居中
+  applyLbTransform()
+}
+
+function showLbMsg(text) {
+  lbMsg.textContent = text
+  lbMsg.classList.remove('hidden')
+}
+
+function showLbItem(idx) {
+  if (!lbItems.length) return
+  lbIndex = (idx + lbItems.length) % lbItems.length
+  const it = lbItems[lbIndex]
+  lbResetView()
+  lbCaption.textContent = it.caption || it.title || ''
+  lbCounter.textContent = lbItems.length > 1 ? `${lbIndex + 1} / ${lbItems.length}` : ''
+  lbImg.classList.add('loading')
+  lbImg.removeAttribute('src')
+  showLbMsg('图片加载中…')
+  const seq = ++lbReqSeq
+  window.pet.fetchRefImage({ kbId: it.kbId, filePath: it.url }).then((res) => {
+    // 用户已经切到别的图/关掉灯箱：迟到的响应不覆盖
+    if (seq !== lbReqSeq || lbRoot.classList.contains('hidden')) return
+    if (!res || !res.ok) {
+      lbImg.classList.remove('loading')
+      showLbMsg(res && res.error ? `图片加载失败：${res.error}` : '图片加载失败')
+      return
+    }
+    lbImg.src = res.objectUrl
+  }).catch(() => {
+    if (seq !== lbReqSeq || lbRoot.classList.contains('hidden')) return
+    lbImg.classList.remove('loading')
+    showLbMsg('图片加载失败')
+  })
+}
+
+function closeLightbox() {
+  if (!lbRoot) return
+  lbRoot.classList.add('hidden')
+  lbImg.removeAttribute('src')
+  lbReqSeq++
+}
+
+/** 打开某条消息的图片灯箱；focusUrl 是要定位的那张图的 resource:// 句柄 */
+function openRefLightbox(s, focusUrl) {
+  const items = []
+  const seen = new Set()
+  for (const r of s.refData) {
+    const img = parseRefImage(r)
+    if (!img || seen.has(img.url)) continue
+    seen.add(img.url)
+    items.push(img)
+  }
+  if (!items.length) return
+  ensureLightbox()
+  lbItems = items
+  const idx = items.findIndex((it) => it.url === focusUrl)
+  const single = items.length === 1
+  navWrapVisibility(single)
+  showLbItem(Math.max(0, idx))
+  lbRoot.classList.remove('hidden')
+}
+
+function navWrapVisibility(single) {
+  lbRoot.querySelector('.lb-nav').classList.toggle('hidden', single)
 }
 
 function renderRefusal(query, kbCount) {

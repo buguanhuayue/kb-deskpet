@@ -510,6 +510,26 @@
     });
   }
 
+  // 引用图片取回：走 KB 文件代理（Bearer + 身份租户头，与 403 修复同一套规则）。
+  // 引用里的 image_info.url 是 resource:// 存储句柄，浏览器不能直接当 <img src>，
+  // 必须经代理转成 blob → objectURL。401 时与 ask 同策略：静默续期后重放一次。
+  const refImageCache = new Map(); // storageUrl -> Promise<{ok, objectUrl}>
+  const REF_IMAGE_CACHE_MAX = 60;
+
+  async function fetchRefImageOnce(kbId, filePath) {
+    const url = `${normalizeBase()}/knowledge-bases/${encodeURIComponent(kbId)}/files?file_path=${encodeURIComponent(filePath)}`;
+    const doFetch = async (authToken, retried) => {
+      const r = await fetch(url, { headers: kbHeaders(authToken) });
+      if (r.status === 401 && !retried && await onUnauthorized(true)) {
+        return doFetch(loadCfg().token, true);
+      }
+      if (!r.ok) throw new Error(`图片请求失败: HTTP ${r.status}`);
+      const blob = await r.blob();
+      return URL.createObjectURL(blob);
+    };
+    return doFetch(loadCfg().token, false).then((objectUrl) => ({ ok: true, objectUrl }));
+  }
+
   window.pet = {
     state: async () => {
       const c = loadCfg();
@@ -875,6 +895,33 @@
         return { ok: true, sessionId: activeSessionId };
       } catch (e) {
         emitLocal('chat:event', { response_type: 'error', content: e.message });
+        return { error: e.message };
+      }
+    },
+
+    // 引用图片取回：走 KB 文件代理（Bearer + 身份租户头，与 403 修复同一套规则）。
+    // 引用里的 image_info.url 是 resource:// 存储句柄，浏览器不能直接当 <img src>，
+    // 必须经代理转成 blob → objectURL。401 时与 ask 同策略：静默续期后重放一次。
+    fetchRefImage: async ({ kbId, filePath }) => {
+      const key = String(filePath || '');
+      if (!key || !kbId) return { error: '缺少知识库或文件句柄' };
+      let entry = refImageCache.get(key);
+      if (!entry) {
+        entry = fetchRefImageOnce(kbId, key);
+        refImageCache.set(key, entry);
+        // 容量上限：驱逐最早缓存的 objectURL，防长时间使用泄漏内存
+        if (refImageCache.size > REF_IMAGE_CACHE_MAX) {
+          const oldest = refImageCache.keys().next().value;
+          const evicted = refImageCache.get(oldest);
+          refImageCache.delete(oldest);
+          evicted.then((res) => { if (res.ok) URL.revokeObjectURL(res.objectUrl); }).catch(() => {});
+        }
+      }
+      try {
+        return await entry;
+      } catch (e) {
+        // 失败不缓存，下次点开还能重试
+        refImageCache.delete(key);
         return { error: e.message };
       }
     },
