@@ -31,12 +31,26 @@ const MAX_FILE_MB: u64 = 50;
 /// 单次提交最多展开多少个文件（防止误拖整个 home 目录）
 const MAX_BATCH: usize = 500;
 
+/// 单个文件最多自动上传几次。计数落在条目上（跨多次 kick 累加），
+/// 这是死循环的最后一道保险：不管哪条未预料的路径反复唤醒上传，
+/// 同一个文件最多只会打服务端 3 次就转终态失败。
+const MAX_UPLOAD_ATTEMPTS: u32 = 3;
+/// 一次 upload_one 内部最多发几个请求（正常一次 + 网络重试 + 401 重放）。
+/// 与各分支自己的计数器解耦：即使两个分支互相触发，也绝不会超过这个数。
+const MAX_REQUEST_PER_ITEM: u32 = 4;
+/// 人工重试次数上限，防止 upload_retry 被反复调用变成新的自旋入口。
+const MAX_MANUAL_RETRIES: u32 = 5;
+/// 上传请求上限。50MB 在慢网上也够用，同时把「一条卡住」的窗口从 10 分钟压到 5 分钟。
+const UPLOAD_TIMEOUT_SECS: u64 = 300;
+/// 普通 API（轮询、刷新）上限。轮询本来就是 2 秒一轮，卡 2 分钟已经不正常。
+const API_TIMEOUT_SECS: u64 = 120;
+
 fn client() -> &'static Client {
     static C: OnceLock<Client> = OnceLock::new();
     C.get_or_init(|| {
         Client::builder()
-            .timeout(Duration::from_secs(600))
-            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(API_TIMEOUT_SECS))
+            .connect_timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default()
     })
@@ -81,6 +95,13 @@ pub struct UploadItem {
     /// 入队那一刻的目标知识库。队列共用一份全局 cfg，用户中途切库后
     /// 旧的 queued 条目如果不自持 kb_id，就会静默上传到新选的库里。
     pub kb_id: String,
+    /// 自动上传尝试次数（跨多次 kick 累加）。达到 MAX_UPLOAD_ATTEMPTS 即终态失败，
+    /// 这条计数是「同一个文件绝不无限重传」的硬边界。
+    pub attempts: u32,
+    /// 人工重试次数。超限后 upload_retry 直接拒绝，避免重试入口变成新的自旋源。
+    pub retry_count: u32,
+    /// 入队时刻（毫秒）。用于拦住「刚失败又被循环重新入队」的同一路径。
+    pub created_ms: u64,
 }
 
 impl UploadItem {
@@ -103,18 +124,44 @@ impl UploadItem {
             error: String::new(),
             tenant_id,
             kb_id: String::new(),
+            attempts: 0,
+            retry_count: 0,
+            created_ms: now_ms(),
         }
     }
 }
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn uuid_like() -> String {
+    use std::sync::atomic::AtomicU64;
     use std::time::{SystemTime, UNIX_EPOCH};
+    // 系统时钟在 macOS 上的实际分辨率是微秒级：批量拖拽时循环里连续 new 条目，
+    // 很容易让几个文件拿到同一个 nanos。曾实测一批 6 个文件只生成 5 个 id，
+    // 两个文件共用一个 id —— 于是：
+    //   · 一个条目的状态永远写不进去（update_item 只命中第一个同 id 的），
+    //     表现就是上传完成了却一直卡在「解析中」；
+    //   · 另一个永远停在 queued，kick 反复取到它、upload_one 却操作第一条，
+    //     旧版每轮都会重传一次已存在的文件 → 每秒 7 次 409 的死循环。
+    // 加进程内自增序号：同一微秒内创建的条目 id 也必然不同。
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let r = (nanos as u64) ^ (std::process::id() as u64).wrapping_mul(2654435761);
-    format!("{:x}{:04x}", nanos, (r & 0xffff) as u16)
+    format!(
+        "{:x}{:04x}{:04x}",
+        nanos,
+        (seq & 0xffff) as u16,
+        (r & 0xffff) as u16
+    )
 }
 
 #[derive(Default, Serialize)]
@@ -214,6 +261,69 @@ fn emit_stats(app: &AppHandle) {
         stats_of(&g.items)
     };
     let _ = app.emit("upload:update", json!({ "stats": stats }));
+}
+
+/* ---------------- 日志 ---------------- */
+
+/// 上传链路的文件日志。
+///
+/// 之前这条链路一行日志都没有（`tauri` release 版 stderr 也没人看得见），
+/// 上传卡死时只能靠服务器 nginx 日志反推，定位成本极高。这里用最简单的
+/// append 写文件，不引新依赖：写入量小（每个文件几行）、O_APPEND 并发安全，
+/// 超过 1MB 轮转一次。
+fn ulog(app: &AppHandle, msg: &str) {
+    let line = format!("[{}] {}\n", local_stamp(), msg);
+    eprintln!("{}", line.trim_end());
+    let dir = match app.path().app_log_dir() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("upload.log");
+    if let Ok(m) = std::fs::metadata(&path) {
+        if m.len() > 1_048_576 {
+            let _ = std::fs::rename(&path, dir.join("upload.log.1"));
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// 时间戳（UTC+8）。手算而不引 chrono，只为了让日志能直接读。
+fn local_stamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+        + 8 * 3600;
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    // Howard Hinnant 的 civil_from_days
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        y,
+        m,
+        d,
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
 }
 
 fn current_cfg(app: &AppHandle) -> UploadCfg {
@@ -582,21 +692,112 @@ fn fail(app: &AppHandle, id: &str, msg: &str) {
     });
 }
 
+/// upload_one 入口的原子裁决结果。
+#[derive(Debug, PartialEq)]
+enum BeginAttempt {
+    /// 可以上传
+    Go,
+    /// 条目已不在排队态（被别的路径接管 / 已终态）：直接让出，绝不重复上传
+    Skip,
+    /// 自动重试次数已打满：已在内部置为终态失败，附带实际已用次数
+    Exhausted(u32),
+}
+
+/// 入口裁决：只有 queued 能开始，并且在同一处累加 attempts。
+///
+/// 这是「同一个文件不会无限重传」的硬边界 —— 计数落在条目上而不是函数局部变量，
+/// 所以不管有多少条路径反复唤醒上传，同一个文件最多（重新）上传 MAX_UPLOAD_ATTEMPTS 次。
+fn begin_attempt(it: &mut UploadItem) -> BeginAttempt {
+    if it.status != "queued" {
+        return BeginAttempt::Skip;
+    }
+    it.attempts += 1;
+    if it.attempts > MAX_UPLOAD_ATTEMPTS {
+        it.status = "failed".into();
+        it.progress = 0;
+        it.error = format!(
+            "已自动重试 {} 次仍未成功，请检查网络后手动重试",
+            MAX_UPLOAD_ATTEMPTS
+        );
+        return BeginAttempt::Exhausted(it.attempts - 1);
+    }
+    BeginAttempt::Go
+}
+
+/// 是否按「库里已有」收尾。
+///
+/// 以 HTTP 状态码为主判据：knowledge/file 只把 duplicate 映射成 409。
+/// body 里的 `code` 只作补充 —— 以前只看 code，body 结构一变（HTML 错误页、
+/// 字段改名、被代理改写）就会掉进错误分支被当成可重试项。
+fn is_duplicate(status: u16, body: &Value) -> bool {
+    status == 409 || body.get("code").and_then(|c| c.as_str()) == Some("duplicate_file")
+}
+
+/// kick 视角下这条记录算不算「已推进」：parsing 也算 —— 文件已入库，
+/// 解析有独立轮询任务接着跑，不会占住 worker。
+fn kick_progressed(status: &str) -> bool {
+    matches!(status, "done" | "exists" | "failed" | "parsing")
+}
+
+/// 手动重试的前置闸门。
+///
+/// 正在上传/解析的条目被重置成 queued 会让两个 worker 同时传同一个文件 ——
+/// 等于凭空造出一条重复上传路径，正是这次事故的形态。
+fn retry_gate(it: &UploadItem) -> Result<(), String> {
+    if matches!(it.status.as_str(), "uploading" | "parsing" | "queued") {
+        return Err("这条还在上传或解析中，稍等再看".into());
+    }
+    if it.retry_count >= MAX_MANUAL_RETRIES {
+        return Err(format!(
+            "这个文件已手动重试 {} 次仍未成功，请检查文件或稍后再试",
+            it.retry_count
+        ));
+    }
+    Ok(())
+}
+
 async fn upload_one(app: AppHandle, id: String) {
     // kick 取出 id 到本函数真正执行之间，认证可能已被置闸。此时条目仍是 queued，
     // 原样留着等重登续跑；标 failed 会白白丢掉用户排队的文件。
     if app.state::<UploadState>().auth_blocked.load(Ordering::SeqCst) {
         return;
     }
+    // 入口做一次原子「占用」：只有仍是 queued 的条目才允许开始上传，并在同一把锁里
+    // 累加 attempts。这里原来是只读拷贝，一旦有未预料的路径把同一条目重新置回 queued
+    // （或并发唤醒两个 worker），同一个文件就会被反复上传 —— 服务端日志里
+    // 「每秒 7 次、无退避地重传同一个文件」正是这类重入的形态。
+    let mut exhausted: Option<u32> = None;
     let (mut cfg, item) = {
         let st = app.state::<UploadState>();
-        let g = st.inner.lock().unwrap();
-        let it = match g.items.iter().find(|i| i.id == id) {
-            Some(i) => i.clone(),
+        let mut g = st.inner.lock().unwrap();
+        let cfg = g.cfg.clone();
+        let it = match g.items.iter_mut().find(|i| i.id == id) {
+            Some(i) => i,
             None => return,
         };
-        (g.cfg.clone(), it)
+        match begin_attempt(it) {
+            BeginAttempt::Go => {}
+            BeginAttempt::Skip => return,
+            BeginAttempt::Exhausted(n) => exhausted = Some(n),
+        }
+        (cfg, it.clone())
     };
+    if let Some(n) = exhausted {
+        // 锁已释放，这里再广播一次让两个窗口都看到终态
+        update_item(&app, &id, |_| {});
+        ulog(
+            &app,
+            &format!("skip id={}：已达自动重试上限（{} 次），转终态失败", id, n),
+        );
+        return;
+    }
+    ulog(
+        &app,
+        &format!(
+            "start id={} name={} size={} attempt={}/{}",
+            id, item.name, item.size, item.attempts, MAX_UPLOAD_ATTEMPTS
+        ),
+    );
 
     // 条目没带目标库时绝不回退全局 cfg：那可能是上一个账号 / 上一次选的库，
     // 静默回退会把文件传到别人的空间里（切库、换账号场景）。
@@ -666,7 +867,20 @@ async fn upload_one(app: AppHandle, id: String) {
     // 结果 body=None、文件被误标「上传没有完成」。现在循环直接返回成功响应体。
     let mut network_retries = 0;
     let mut retried_401 = false;
+    let mut sent = 0u32;
     let v: Value = loop {
+        // 总闸：不管下面哪个分支想 continue，单个条目最多发 MAX_REQUEST_PER_ITEM 个请求。
+        // 各分支自己的计数器只管自己的语义，这个计数负责兜住「两个分支互相触发」
+        // 这种组合爆炸 —— 任何情况下都不可能变成无退避的连续重传。
+        if sent >= MAX_REQUEST_PER_ITEM {
+            fail(&app, &id, "多次请求仍未成功，请稍后重试");
+            ulog(
+                &app,
+                &format!("abort id={}：单条目请求数达上限 {}", id, sent),
+            );
+            return;
+        }
+        sent += 1;
         let token = match usable_token(&app).await {
             Ok(t) => t,
             // 续期请求没打通且手里没有旧令牌：只让这一个文件失败，绝不全局清盘
@@ -703,21 +917,46 @@ async fn upload_one(app: AppHandle, id: String) {
         if cfg.tenant_id > 0 {
             req = req.header("X-Tenant-ID", cfg.tenant_id.to_string());
         }
-        let resp = req.multipart(form).send().await;
+        let t0 = Instant::now();
+        let resp = req
+            .timeout(Duration::from_secs(UPLOAD_TIMEOUT_SECS))
+            .multipart(form)
+            .send()
+            .await;
 
         let resp = match resp {
             Ok(r) => r,
             Err(e) => {
-                // 网络层错误重试一次（连接被重置之类），不占用 401 重放配额
+                // 网络层错误重试一次（连接被重置之类），不占用 401 重放配额。
+                // 退避改成指数式（400ms → 800ms）：无退避的密集重试既压服务端，
+                // 也会让「偶发失败」在外观上变成死循环。
                 if network_retries < 1 {
+                    let wait = 400u64 * 2u64.pow(network_retries);
                     network_retries += 1;
-                    tokio::time::sleep(Duration::from_millis(800)).await;
+                    ulog(
+                        &app,
+                        &format!(
+                            "net-err id={} 第 {} 次失败，{}ms 后重试：{}",
+                            id, network_retries, wait, e
+                        ),
+                    );
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
                     continue;
                 }
+                ulog(&app, &format!("net-err id={} 放弃：{}", id, e));
                 fail(&app, &id, &format!("网络错误：{}", e));
                 return;
             }
         };
+        ulog(
+            &app,
+            &format!(
+                "resp id={} status={} in {}ms",
+                id,
+                resp.status().as_u16(),
+                t0.elapsed().as_millis()
+            ),
+        );
 
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
@@ -727,10 +966,12 @@ async fn upload_one(app: AppHandle, id: String) {
             // 已经用新令牌重放过一次：不再刷新（免得白白消耗一次性轮换的
             // refreshToken），只让这条失败，不全局清盘 —— 也可能是服务端临时问题。
             if retried_401 {
+                ulog(&app, &format!("401 id={}：重放后仍被拒绝，收尾", id));
                 fail(&app, &id, "续期后仍被拒绝，请稍后重试");
                 return;
             }
             retried_401 = true;
+            ulog(&app, &format!("401 id={}：尝试续期后重放一次", id));
             match decide_upload_401(refresh_token(&app).await) {
                 Upload401Action::Retry => continue,
                 // 续期请求本身没打通：只让这一个文件失败，绝不全局清盘踢登录
@@ -749,10 +990,17 @@ async fn upload_one(app: AppHandle, id: String) {
             fail(&app, &id, &format!("超过服务端 {}MB 限制", MAX_FILE_MB));
             return;
         }
-        // 重复文件必须放在 !is_success 之前判断：
-        // 实测后端返回的是 HTTP 409 + {"success":false,"code":"duplicate_file","data":{已有记录}}，
+        // 重复文件必须放在 !is_success 之前判断。
+        // 实测后端返回 HTTP 409 + {"success":false,"code":"duplicate_file","data":{已有记录}}，
         // 先按错误处理就会把「库里已经有了」显示成「失败」。
-        if v.get("code").and_then(|c| c.as_str()) == Some("duplicate_file") {
+        //
+        // 判据以 HTTP 状态为主、body 的 code 为辅：knowledge/file 只把「库里已有同一
+        // 文件」映射成 409，所以 409 一律按「已存在」收尾。以前只看 body 里的 code，
+        // body 结构一变（返回 HTML 错误页、字段改名、被代理改写）就会掉进下面的错误
+        // 分支被当成可重试项 —— 这是死循环最可能的引爆点之一。
+        let dup = is_duplicate(status.as_u16(), &v);
+        if dup {
+            ulog(&app, &format!("dup id={} name={}（服务端已有，按已存在收尾）", id, item.name));
             let kid = v
                 .pointer("/data/id")
                 .and_then(|x| x.as_str())
@@ -774,6 +1022,15 @@ async fn upload_one(app: AppHandle, id: String) {
                 .or_else(|| v.get("error").and_then(|x| x.as_str()))
                 .unwrap_or("")
                 .to_string();
+            ulog(
+                &app,
+                &format!(
+                    "http-err id={} status={} body={}",
+                    id,
+                    status.as_u16(),
+                    text.chars().take(160).collect::<String>().replace('\n', " ")
+                ),
+            );
             fail(
                 &app,
                 &id,
@@ -833,6 +1090,12 @@ async fn poll_parse(app: AppHandle, id: String, knowledge_id: String, tenant_id:
     let started = Instant::now();
     // 401 后允许刷新重试一次；不加限制时每次 401 都刷新成功会绕满 150 轮
     let mut refreshed = false;
+    // 只在解析状态真正变化时落日志，避免 150 轮刷出 150 行噪音
+    let mut last_ps = String::new();
+    ulog(
+        &app,
+        &format!("poll start id={} kid={}", id, knowledge_id),
+    );
     // 服务端实测 20 秒内完成；给到 5 分钟，超时只提示不当作失败
     for _ in 0..150 {
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -840,11 +1103,19 @@ async fn poll_parse(app: AppHandle, id: String, knowledge_id: String, tenant_id:
         // 解析中的条目不能只等服务端返回 401：令牌被清后服务端也可能回 403 或 200，
         // 那样状态会一直卡在 parsing。按闸门直接标失败。
         if app.state::<UploadState>().auth_blocked.load(Ordering::SeqCst) {
+            ulog(&app, &format!("poll-abort id={}：认证已过期", id));
             fail(&app, &id, "登录已过期，请重新登录");
             return;
         }
         let cfg = current_cfg(&app);
         if cfg.server_url.is_empty() {
+            // 以前这里是静默 return：条目永远停在 parsing，日志里一点痕迹都没有，
+            // 排查时只能干瞪眼。现在明确标失败并落日志。
+            ulog(
+                &app,
+                &format!("poll-abort id={}：Rust 侧 server_url 为空", id),
+            );
+            fail(&app, &id, "服务地址丢失，请重新登录后重试");
             return;
         }
         let token = match usable_token(&app).await {
@@ -915,6 +1186,10 @@ async fn poll_parse(app: AppHandle, id: String, knowledge_id: String, tenant_id:
 
         match ps.as_str() {
             "completed" => {
+                ulog(
+                    &app,
+                    &format!("poll done id={} kid={} in {}s", id, knowledge_id, elapsed),
+                );
                 update_item(&app, &id, |it| {
                     it.status = "done".into();
                     it.progress = 100;
@@ -929,6 +1204,10 @@ async fn poll_parse(app: AppHandle, id: String, knowledge_id: String, tenant_id:
                     .and_then(|x| x.as_str())
                     .unwrap_or("解析失败")
                     .to_string();
+                ulog(
+                    &app,
+                    &format!("poll failed id={} kid={}：{}", id, knowledge_id, err),
+                );
                 update_item(&app, &id, |it| {
                     it.status = "failed".into();
                     it.parse_status = "failed".into();
@@ -938,6 +1217,16 @@ async fn poll_parse(app: AppHandle, id: String, knowledge_id: String, tenant_id:
                 return;
             }
             _ => {
+                if ps != last_ps {
+                    ulog(
+                        &app,
+                        &format!(
+                            "poll id={} kid={} ps={} at {}s",
+                            id, knowledge_id, ps, elapsed
+                        ),
+                    );
+                    last_ps = ps.clone();
+                }
                 update_item(&app, &id, |it| {
                     it.status = "parsing".into();
                     it.progress = 60;
@@ -949,6 +1238,13 @@ async fn poll_parse(app: AppHandle, id: String, knowledge_id: String, tenant_id:
     }
 
     // 超时不判失败：文件确实已经入库了，只是还没解析完
+    ulog(
+        &app,
+        &format!(
+            "poll timeout id={} kid={} last_ps={}",
+            id, knowledge_id, last_ps
+        ),
+    );
     update_item(&app, &id, |it| {
         it.parse_status = "processing".into();
         it.error = "解析时间较长，稍后会自动完成".into();
@@ -971,6 +1267,16 @@ fn should_resume_kick(blocked: bool, items: &[UploadItem]) -> bool {
     !blocked && items.iter().any(|i| i.status == "queued")
 }
 
+/// 读条目当前状态，用于 kick 的推进判断。
+fn item_status(app: &AppHandle, id: &str) -> Option<String> {
+    let st = app.state::<UploadState>();
+    let g = st.inner.lock().unwrap();
+    g.items
+        .iter()
+        .find(|i| i.id == id)
+        .map(|i| i.status.clone())
+}
+
 pub fn kick(app: AppHandle) {
     {
         let st = app.state::<UploadState>();
@@ -979,6 +1285,11 @@ pub fn kick(app: AppHandle) {
         }
     }
     tauri::async_runtime::spawn(async move {
+        // 无进展熔断：同一个 id 连续两轮都没能离开非终态，说明状态机卡住或者入口
+        // 被反复唤醒。直接判失败、继续下一条，绝不允许它无限占用 worker ——
+        // 之前「一条卡死、后面 11 个文件永远排队」正是缺这道闸。
+        let mut last_id: Option<String> = None;
+        let mut stuck: u32 = 0;
         loop {
             let next = {
                 let st = app.state::<UploadState>();
@@ -989,7 +1300,35 @@ pub fn kick(app: AppHandle) {
                 )
             };
             match next {
-                Some(id) => upload_one(app.clone(), id).await,
+                Some(id) => {
+                    upload_one(app.clone(), id.clone()).await;
+                    let status = item_status(&app, &id).unwrap_or_default();
+                    // parsing 也算已推进：文件已入库，解析有独立的轮询任务接着跑
+                    let progressed = kick_progressed(&status);
+                    if progressed {
+                        stuck = 0;
+                        last_id = None;
+                    } else {
+                        stuck = if last_id.as_deref() == Some(id.as_str()) {
+                            stuck + 1
+                        } else {
+                            1
+                        };
+                        last_id = Some(id.clone());
+                        if stuck >= 2 {
+                            ulog(
+                                &app,
+                                &format!(
+                                    "stuck id={} status={}：连续 {} 轮无进展，判失败并跳过",
+                                    id, status, stuck
+                                ),
+                            );
+                            fail(&app, &id, "上传状态没有推进，已跳过（可手动重试）");
+                            stuck = 0;
+                            last_id = None;
+                        }
+                    }
+                }
                 None => break,
             }
         }
@@ -1085,6 +1424,19 @@ pub fn upload_enqueue(
                 exists += 1;
                 continue;
             }
+            // 刚被自动重试用尽额度、又立刻被重新拖进来的同一路径：60 秒内不再建新条目。
+            // 正常用户重拖至少隔几秒，而循环脚本是毫秒级反复入队 —— 每次新建条目都会
+            // 重置 attempts 配额，等于绕开单文件尝试上限。
+            // 只拦 attempts 已打满的（普通失败仍可立刻重拖）。
+            if g.items.iter().any(|i| {
+                i.path == path
+                    && i.status == "failed"
+                    && i.attempts >= MAX_UPLOAD_ATTEMPTS
+                    && now_ms().saturating_sub(i.created_ms) < 60_000
+            }) {
+                exists += 1;
+                continue;
+            }
             if size > MAX_FILE_MB * 1024 * 1024 {
                 too_big.push(rel.clone());
                 skipped += 1;
@@ -1144,18 +1496,33 @@ pub fn upload_clear(app: AppHandle) -> Value {
 
 #[tauri::command]
 pub fn upload_retry(app: AppHandle, id: String) -> Value {
+    let mut rejected: Option<String> = None;
     {
         let st = app.state::<UploadState>();
         let mut g = st.inner.lock().unwrap();
         if let Some(it) = g.items.iter_mut().find(|i| i.id == id) {
-            it.status = "queued".into();
-            it.progress = 0;
-            it.error.clear();
-            it.knowledge_id.clear();
-            it.parse_status.clear();
-            it.parse_elapsed = 0;
+            match retry_gate(it) {
+                Err(msg) => rejected = Some(msg),
+                Ok(()) => {
+                    it.retry_count += 1;
+                    // 人工重试给一轮新的自动重试配额，但配额本身有上限：
+                    // 即使有人（或某段脚本）反复调用这个命令，也最多再打 3 次。
+                    it.attempts = 0;
+                    it.status = "queued".into();
+                    it.progress = 0;
+                    it.error.clear();
+                    it.knowledge_id.clear();
+                    it.parse_status.clear();
+                    it.parse_elapsed = 0;
+                }
+            }
         }
     }
+    if let Some(msg) = rejected {
+        ulog(&app, &format!("retry-reject id={}：{}", id, msg));
+        return json!({ "ok": false, "error": msg });
+    }
+    ulog(&app, &format!("retry id={}", id));
     update_item(&app, &id, |_| {});
     kick(app);
     json!({ "ok": true })
@@ -1627,6 +1994,139 @@ mod tests {
             src.contains("let mut network_retries = 0;")
                 && src.contains("let mut retried_401 = false;"),
             "网络重试与 401 重放必须各自计数，不能共用一个 attempt"
+        );
+    }
+
+    /* ---------------- 上传死循环回归（2026-11-12 事故） ---------------- */
+
+    /// 事故核心：同一个文件被无退避地无限重传（服务端累计 4000+ 次 409）。
+    /// attempts 计数必须落在条目上、跨调用累加，打满即终态失败。
+    #[test]
+    fn attempts_are_capped_per_item() {
+        let mut it = UploadItem::new("/tmp/a.jpg".into(), "a.jpg".into(), 700_000, 10024);
+        for _ in 0..MAX_UPLOAD_ATTEMPTS {
+            // 模拟最坏情况：每次失败后状态又被某条路径置回 queued
+            it.status = "queued".into();
+            assert_eq!(begin_attempt(&mut it), BeginAttempt::Go, "配额内应当放行");
+        }
+        it.status = "queued".into();
+        assert_eq!(
+            begin_attempt(&mut it),
+            BeginAttempt::Exhausted(MAX_UPLOAD_ATTEMPTS),
+            "超过上限必须判失败"
+        );
+        assert_eq!(it.status, "failed");
+        assert!(it.error.contains("手动重试"), "错误文案要给出路：{}", it.error);
+        // 终态后必须拒绝：不能让任何路径再打一次服务端
+        assert_eq!(begin_attempt(&mut it), BeginAttempt::Skip);
+    }
+
+    /// 正在上传 / 已完成的条目不能被再次接管 —— 并发唤醒时靠这条挡住重复上传
+    #[test]
+    fn begin_attempt_skips_non_queued() {
+        let mut it = UploadItem::new("/tmp/a.jpg".into(), "a.jpg".into(), 1, 1);
+        it.status = "uploading".into();
+        assert_eq!(begin_attempt(&mut it), BeginAttempt::Skip);
+        assert_eq!(it.attempts, 0, "跳过时不该消耗配额");
+        it.status = "done".into();
+        assert_eq!(begin_attempt(&mut it), BeginAttempt::Skip);
+    }
+
+    /// 批量拖拽时连续创建条目必须拿到不同 id。
+    ///
+    /// 事故根因：一批 6 个文件只生成了 5 个 id（`u_18e7768764f262485059` 被两个不同
+    /// 文件共用）。macOS 上 SystemTime 的实际分辨率是微秒级，循环里连续 new 会撞时钟。
+    /// 同 id 的后果：一个条目的状态永远写不进去（卡在解析中），另一个永远停在 queued
+    /// （旧版每轮重传一次已存在的文件 → 每秒 7 次 409）。
+    #[test]
+    fn item_ids_are_unique_in_a_burst() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..5000 {
+            let it = UploadItem::new("/tmp/a.jpg".into(), "a.jpg".into(), 1, 1);
+            assert!(seen.insert(it.id.clone()), "id 重复：{}", it.id);
+        }
+    }
+
+    /// 重试闸门：正在跑的不能重置（否则凭空造出并发重复上传），人工重试也有上限
+    #[test]
+    fn retry_gate_blocks_in_flight_and_exhausted() {
+        let mut it = UploadItem::new("/tmp/a".into(), "a".into(), 1, 1);
+        for s in ["uploading", "parsing", "queued"] {
+            it.status = s.into();
+            assert!(retry_gate(&it).is_err(), "{} 状态不该允许重试", s);
+        }
+        it.status = "failed".into();
+        assert!(retry_gate(&it).is_ok(), "失败的条目必须能重试");
+        it.retry_count = MAX_MANUAL_RETRIES;
+        assert!(retry_gate(&it).is_err(), "人工重试次数用尽必须拒绝");
+    }
+
+    /// 409 必须按「已存在」收尾，哪怕 body 不是 JSON、code 字段没了。
+    /// 这是旧逻辑唯一的破口：判定依赖 body，body 一变就掉进可重试的错误分支。
+    #[test]
+    fn conflict_is_always_duplicate() {
+        assert!(is_duplicate(
+            409,
+            &json!({"success": false, "code": "duplicate_file", "data": {"id": "k1"}})
+        ));
+        assert!(is_duplicate(409, &Value::Null), "空 body 也是重复文件");
+        assert!(
+            is_duplicate(409, &json!({"message": "conflict"})),
+            "code 缺失也必须认 409"
+        );
+        // 反向：别的错误不能被误判成「已存在」，否则真失败会显示成成功
+        assert!(!is_duplicate(500, &json!({"message": "boom"})));
+        assert!(!is_duplicate(403, &json!({"code": "forbidden"})));
+    }
+
+    /// kick 的推进判断：parsing 算推进（解析另有轮询任务），
+    /// queued / uploading 不算 —— 连续两轮不算就熔断，把 worker 让给下一条。
+    #[test]
+    fn kick_progress_semantics() {
+        for s in ["done", "exists", "failed", "parsing"] {
+            assert!(kick_progressed(s), "{} 应当算已推进", s);
+        }
+        for s in ["queued", "uploading", ""] {
+            assert!(!kick_progressed(s), "{} 不该算已推进", s);
+        }
+    }
+
+    /// 日志时间戳是手算的日期换算，写错了日志反而误导排查
+    #[test]
+    fn local_stamp_looks_like_datetime() {
+        let s = local_stamp();
+        assert_eq!(s.len(), 19, "{}", s);
+        assert_eq!(&s[4..5], "-");
+        assert_eq!(&s[10..11], " ");
+        assert_eq!(&s[13..14], ":");
+        let year: i32 = s[..4].parse().expect("年份");
+        assert!((2020..2100).contains(&year), "{}", s);
+    }
+
+    /// 接线守卫：这几处任一被改回旧写法，事故就会复发。
+    #[test]
+    fn upload_loop_guards_wiring() {
+        let src = include_str!("upload.rs");
+        assert!(
+            src.contains("if sent >= MAX_REQUEST_PER_ITEM"),
+            "单条目请求数必须有总闸"
+        );
+        assert!(
+            src.contains("let dup = is_duplicate(status.as_u16(), &v);"),
+            "409 必须按状态码判定，不能只看 body 的 code"
+        );
+        assert!(
+            src.contains("pub attempts: u32"),
+            "attempts 必须落在条目上，跨调用累加才有意义"
+        );
+        assert!(
+            src.contains("match begin_attempt(it)"),
+            "upload_one 入口必须做原子占用 + attempts 计数"
+        );
+        assert!(src.contains("if stuck >= 2"), "kick 必须有连续无进展熔断");
+        assert!(
+            src.contains(".timeout(Duration::from_secs(UPLOAD_TIMEOUT_SECS))"),
+            "上传请求必须有独立超时，不能沿用 10 分钟"
         );
     }
 }
