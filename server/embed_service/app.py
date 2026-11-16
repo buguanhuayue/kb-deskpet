@@ -34,6 +34,20 @@ EMBED_FALLBACKS = [
 ]
 REQUIRED_DIM = int(os.getenv("EMBED_DIM", "1024"))
 
+# ---- ONNX 运行时调优（2026-11-16）----
+# CPU arena 的问题是只增不减：实测容器内存一路涨到 8G 上限、memory.events.max 触顶
+# 4938 次，此后每次分配都要等内核回收，吞吐断崖式下跌（真实切片首条耗时 215s、
+# 稳定后 4s/条）。关掉 arena 让内存按实际需求释放，代价只是少量 malloc 抖动。
+CPU_ARENA = os.getenv("EMBED_CPU_ARENA", "0").strip().lower() not in ("0", "false", "no", "off", "")
+# 镜像里 OMP_NUM_THREADS=4，但宿主机有 8 核 —— 显式把 intra_op 顶到物理核数，
+# 否则一半 CPU 白闲着。0/未设 = 交给 onnxruntime 自己定（老行为）。
+EMBED_THREADS = int(os.getenv("EMBED_THREADS", "8")) or None
+# 单次 ONNX 推理喂多少条。2026-11-16 用 12 条真实切片（1208–1564 字）实测：
+#   batch=1 → 8.13s/条, batch=2 → 4.21s/条, batch=4 → 4.97s/条, batch=8 → 6.37s/条
+# 批越大反而越慢：切块长度不齐时 padding 把短块补到最长块，白烧算力。
+# 2 是最优点，别再往上调。
+EMBED_BATCH = max(1, int(os.getenv("EMBED_BATCH", "2")))
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
 log = logging.getLogger("embed")
 
@@ -66,7 +80,11 @@ def _load() -> None:
                 log.warning("模型 %s 是 %s 维，DDL 要 %s 维，跳过", name, info.get("dim"), REQUIRED_DIM)
                 continue
             log.info("加载 embedding 模型 %s（首次会从 hf-mirror 下载权重）", name)
-            m = TextEmbedding(model_name=name)
+            m = TextEmbedding(
+                model_name=name,
+                threads=EMBED_THREADS,
+                enable_cpu_mem_arena=CPU_ARENA,
+            )
             dim = len(next(iter(m.embed(["预热"]))))
             if dim != REQUIRED_DIM:
                 log.warning("实测 %s 维 ≠ %s，跳过", dim, REQUIRED_DIM)
@@ -87,7 +105,11 @@ def _load() -> None:
             from fastembed.rerank.cross_encoder import TextCrossEncoder  # 0.7.x 路径
 
         log.info("加载 rerank 模型 %s", RERANK_MODEL)
-        _state["rerank"] = TextCrossEncoder(model_name=RERANK_MODEL)
+        _state["rerank"] = TextCrossEncoder(
+            model_name=RERANK_MODEL,
+            threads=EMBED_THREADS,
+            enable_cpu_mem_arena=CPU_ARENA,
+        )
         _state["rerank_name"] = RERANK_MODEL
         log.info("rerank 就绪 %s", RERANK_MODEL)
     except Exception as e:  # noqa: BLE001
@@ -114,6 +136,10 @@ def health() -> dict:
         "rerank_model": _state["rerank_name"],
         "rerank_ready": _state["rerank"] is not None,
         "rerank_error": _state["rerank_error"],
+        # 便于验证调优是否真的生效（线程数 / arena / 批大小）
+        "threads": EMBED_THREADS,
+        "cpu_arena": CPU_ARENA,
+        "embed_batch": EMBED_BATCH,
     }
 
 
@@ -135,7 +161,7 @@ def embeddings(req: EmbedReq) -> dict:
     texts = [t[:8000] if t.strip() else "空" for t in texts]
 
     with _lock:
-        vecs = [v.tolist() for v in m.embed(texts, batch_size=8)]
+        vecs = [v.tolist() for v in m.embed(texts, batch_size=EMBED_BATCH)]
 
     return {
         "object": "list",
@@ -162,8 +188,14 @@ def rerank(req: RerankReq) -> dict:
         return {"results": [], "model": _state["rerank_name"]}
 
     docs = [d[:2000] for d in req.documents]
+    # 一次把几十条 512-token 候选喂给 ONNX，内存峰值会顶穿容器的 8G 上限，
+    # 进程被 OOM 干掉、容器重启，调用方只看到 EOF（重排静默降级、排序失准）。
+    # 分批推理：峰值只与 batch 成正比，与候选总量无关。
+    batch = max(1, int(os.getenv("RERANK_BATCH", "8")))
+    raw: list[float] = []
     with _lock:
-        raw = list(m.rerank(req.query, docs))
+        for i in range(0, len(docs), batch):
+            raw.extend(float(x) for x in m.rerank(req.query, docs[i : i + batch]))
 
     # bge-reranker 输出的是 logits（可能为负）。硅基流动那侧返回的是 0~1 的
     # relevance_score，这里做 sigmoid 让两边的阈值语义一致（NOT_FOUND_THRESHOLD）。
