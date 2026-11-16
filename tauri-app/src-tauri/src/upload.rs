@@ -1086,19 +1086,43 @@ async fn upload_one(app: AppHandle, id: String) {
     });
 }
 
+/// 解析轮询节奏：前 10 分钟 2 秒一问（常见文档都在这一段里完成，秒表看着是连续走的），
+/// 10–30 分钟降到 10 秒，30–60 分钟降到 30 秒，1 小时后放弃。
+///
+/// 为什么不再用「150 轮 × 2 秒 = 5 分钟」的硬上限：11-16 实测过一批 5 个文件，
+/// kb-embed 单锁串行 + 客户端 60 秒超时触发重试风暴，`02_机房建设方案` 足足跑了
+/// 14 分钟。旧逻辑 5 分钟就撒手，只把 error 改成「解析时间较长」而 status 仍是
+/// parsing，于是行永远停在「解析中 · 5分3s」，服务端其实 13 分钟后早就 completed。
+/// 请求很便宜（GET /knowledge/:id 实测 6ms），与其猜一个上限，不如把窗口放到
+/// 1 小时、频率逐段降下来。
+fn poll_interval_secs(elapsed: u64) -> Option<u64> {
+    if elapsed < 600 {
+        Some(2)
+    } else if elapsed < 1800 {
+        Some(10)
+    } else if elapsed < 3600 {
+        Some(30)
+    } else {
+        None
+    }
+}
+
 async fn poll_parse(app: AppHandle, id: String, knowledge_id: String, tenant_id: i64) {
     let started = Instant::now();
-    // 401 后允许刷新重试一次；不加限制时每次 401 都刷新成功会绕满 150 轮
+    // 401 后允许刷新重试一次；不加限制时每次 401 都刷新成功会绕满整个窗口
     let mut refreshed = false;
-    // 只在解析状态真正变化时落日志，避免 150 轮刷出 150 行噪音
+    // 只在解析状态真正变化时落日志，避免几百轮刷出几百行噪音
     let mut last_ps = String::new();
     ulog(
         &app,
         &format!("poll start id={} kid={}", id, knowledge_id),
     );
-    // 服务端实测 20 秒内完成；给到 5 分钟，超时只提示不当作失败
-    for _ in 0..150 {
-        tokio::time::sleep(Duration::from_secs(2)).await;
+    loop {
+        let wait = match poll_interval_secs(started.elapsed().as_secs()) {
+            Some(s) => s,
+            None => break,
+        };
+        tokio::time::sleep(Duration::from_secs(wait)).await;
 
         // 解析中的条目不能只等服务端返回 401：令牌被清后服务端也可能回 403 或 200，
         // 那样状态会一直卡在 parsing。按闸门直接标失败。
@@ -1237,17 +1261,27 @@ async fn poll_parse(app: AppHandle, id: String, knowledge_id: String, tenant_id:
         }
     }
 
-    // 超时不判失败：文件确实已经入库了，只是还没解析完
+    // 1 小时还没落定：不再挂着假「解析中」——那是 11-16 那次「5分3s 永远不动」的病根。
+    // 明确转成终态，文案说清「内容可能已入库，请核对」，用户既能看到实时状态，
+    // 又能用「重试 / 移除」自己收尾（重试大概率命中服务端 409 → 显示已存在）。
+    let final_elapsed = started.elapsed().as_secs();
     ulog(
         &app,
         &format!(
-            "poll timeout id={} kid={} last_ps={}",
-            id, knowledge_id, last_ps
+            "poll timeout id={} kid={} last_ps={} after {}s",
+            id, knowledge_id, last_ps, final_elapsed
         ),
     );
     update_item(&app, &id, |it| {
-        it.parse_status = "processing".into();
-        it.error = "解析时间较长，稍后会自动完成".into();
+        it.status = "failed".into();
+        it.parse_status = if last_ps.is_empty() {
+            "timeout".into()
+        } else {
+            last_ps.clone()
+        };
+        it.parse_elapsed = final_elapsed;
+        it.error = "解析超过 1 小时仍未确认完成，内容可能已入库，请到知识库核对（可在队列里重试或移除）"
+            .into();
     });
 }
 
@@ -1420,10 +1454,20 @@ pub fn upload_enqueue(
             if g.items.len() >= MAX_BATCH {
                 break;
             }
-            if g.items.iter().any(|i| i.path == path && i.status != "failed") {
+            // 去重只看「正在跑」的条目。done / exists 不再算占位：
+            // 库里那一篇可能刚被删掉，客户端无从判断，硬拦会让同一个文件再也传不进去
+            // （症状是「删了没刷新 → 再传一直提示已存在」）。是否真重复交给服务端按
+            // file_hash 判定 —— 命中就 409 → exists，语义比客户端猜更准。
+            // 同路径的旧终态条目直接替换，保证一条路径在队列里只有一行。
+            if g.items.iter().any(|i| {
+                i.path == path && matches!(i.status.as_str(), "queued" | "uploading" | "parsing")
+            }) {
                 exists += 1;
                 continue;
             }
+            g.items
+                .retain(|i| !(i.path == path && matches!(i.status.as_str(), "done" | "exists")));
+
             // 刚被自动重试用尽额度、又立刻被重新拖进来的同一路径：60 秒内不再建新条目。
             // 正常用户重拖至少隔几秒，而循环脚本是毫秒级反复入队 —— 每次新建条目都会
             // 重置 attempts 配额，等于绕开单文件尝试上限。
@@ -1492,6 +1536,37 @@ pub fn upload_clear(app: AppHandle) -> Value {
     }
     emit_stats(&app);
     json!({ "ok": true })
+}
+
+/// 面板把某一篇从知识库删掉之后，让队列也忘掉它。
+///
+/// 队列的真相只在 Rust 这一份（`UploadState.items`），面板的 `queueItems` 只是镜像。
+/// 旧版删除成功后只 filter 了 JS 那个数组，Rust 侧条目还在：下一次 `emit_stats`
+/// （只发 stats 不带 item）会让面板走全量刷新，被删掉的行原地复活；更糟的是
+/// `upload_enqueue` 按路径去重时仍把它算作占位，同一个文件再也传不进去，
+/// 用户看到的就是「删了没刷新 → 再传提示已存在」。
+///
+/// 只清终态：进行中的条目还在跑，删了知识不能把它掐掉。
+#[tauri::command]
+pub fn upload_forget(app: AppHandle, id: String) -> Value {
+    let mut removed = 0usize;
+    {
+        let st = app.state::<UploadState>();
+        let mut g = st.inner.lock().unwrap();
+        if let Some(path) = g.items.iter().find(|i| i.id == id).map(|i| i.path.clone()) {
+            let before = g.items.len();
+            // 同路径的兄弟条目一起清：它们指向的也是刚刚被删掉的那一篇
+            g.items.retain(|i| {
+                !(i.path == path && matches!(i.status.as_str(), "done" | "exists"))
+            });
+            removed = before - g.items.len();
+        }
+    }
+    if removed > 0 {
+        emit_stats(&app);
+    }
+    ulog(&app, &format!("forget id={} removed={}", id, removed));
+    json!({ "ok": true, "removed": removed })
 }
 
 #[tauri::command]
@@ -2127,6 +2202,43 @@ mod tests {
         assert!(
             src.contains(".timeout(Duration::from_secs(UPLOAD_TIMEOUT_SECS))"),
             "上传请求必须有独立超时，不能沿用 10 分钟"
+        );
+    }
+
+    /// 轮询窗口：5 分钟硬上限那次事故（界面卡在「解析中 · 5分3s」）的直接防线。
+    #[test]
+    fn poll_window_covers_slow_parse() {
+        // 前 10 分钟必须保持 2 秒一问，秒表才是连续走的
+        assert_eq!(poll_interval_secs(0), Some(2));
+        assert_eq!(poll_interval_secs(599), Some(2));
+        // 10 分钟后稀释，但绝不能停：11-16 那份 md 跑了 14 分钟才 completed
+        assert_eq!(poll_interval_secs(600), Some(10));
+        assert_eq!(poll_interval_secs(840), Some(10));
+        assert_eq!(poll_interval_secs(1799), Some(10));
+        assert_eq!(poll_interval_secs(1800), Some(30));
+        assert_eq!(poll_interval_secs(3599), Some(30));
+        // 1 小时后才放弃，且放弃时由调用方转终态（不再挂着假 parsing）
+        assert_eq!(poll_interval_secs(3600), None);
+        assert_eq!(poll_interval_secs(7200), None);
+        // 一个小时的窗口内最多打多少次：300 + 120 + 60 = 480，远小于服务端承受力
+        let mut t = 0u64;
+        let mut polls = 0u64;
+        while let Some(w) = poll_interval_secs(t) {
+            t += w;
+            polls += 1;
+        }
+        assert_eq!(t, 3600);
+        assert!(polls < 600, "一小时内的轮询次数应当收敛，实际 {}", polls);
+    }
+
+    /// 窗口用尽必须转终态：留着 status=parsing 就是「时间不动了」那个 bug。
+    #[test]
+    fn poll_timeout_marks_terminal() {
+        let src = include_str!("upload.rs");
+        assert!(
+            src.contains("it.status = \"failed\".into();")
+                && src.contains("解析超过 1 小时仍未确认完成"),
+            "轮询窗口用尽必须转终态并给出可核对的文案"
         );
     }
 }

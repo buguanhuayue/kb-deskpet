@@ -1759,7 +1759,10 @@ function renderShelf() {
    现在按 upload_enqueue 返回的 ids 跟踪本批条目，全部落定后才汇总真实结果。 */
 const uploadBatches = new Map()
 let uploadBatchSeq = 0
-const UPLOAD_BATCH_TIMEOUT = 6 * 60 * 1000 // 服务端解析轮询上限 5 分钟，留 1 分钟余量
+// 汇总只等 6 分钟：解析慢的（11-16 那种十几分钟）这时还没落定，就按「仍在解析」如实播报，
+// 剩下的交给上传队列 —— Rust 侧会继续轮询到 1 小时，行自己会翻成「已入库」。
+// 绝不能再把「等了 5 分钟」当成成功（旧版就是这么虚报「成功 5 项」的）。
+const UPLOAD_BATCH_TIMEOUT = 6 * 60 * 1000
 
 function trackUploadBatch(ids, kb) {
   if (!Array.isArray(ids) || !ids.length) return
@@ -1786,9 +1789,9 @@ function settleUploadItem(batchId, it) {
   const b = uploadBatches.get(batchId)
   if (!b || b.finished || !it || !b.ids.has(it.id)) return
   const st = it.status
-  // 解析超过 5 分钟仍没落定：服务端只是慢，按成功计，别让汇总永远等不到
-  const slowParse = st === 'parsing' && Number(it.parseElapsed) >= 300
-  if (st === 'done' || slowParse) {
+  // 只认服务端给的真实终态。旧版把「parsing 且已等 300 秒」也算成功 —— 明明还在转，
+  // 汇总却说「成功 5 项，解析完成后就能搜到」，属于虚假播报。
+  if (st === 'done') {
     b.ok++
     b.ids.delete(it.id)
   } else if (st === 'exists') {
@@ -2329,6 +2332,8 @@ function parseLabel(it) {
   const secs = Number(it.parseElapsed) || 0
   if (!secs) return base
   const t = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}分${secs % 60}s`
+  // 超过 5 分钟还没落定，说明 embed 在排队重试，先说清「慢」而不是让秒表看着像死了
+  if (secs >= 300) return `解析较慢 · ${t}`
   return `${base} · ${t}`
 }
 
@@ -2374,9 +2379,12 @@ function renderQueue(items) {
         if (!ok) return
         const r = await window.pet.deleteKnowledge(it.knowledgeId)
         if (r && r.ok === false) return toast(r.error || '删除失败', 'warn')
-        queueItems = queueItems.filter((x) => x.id !== it.id)
+        // 队列真相在 Rust 侧：只 filter 这里那个数组的话，下一次 stats 广播
+        // 会把它整条拉回来，而且入队去重还会继续拦同一个文件。
+        await window.pet.forgetUpload(it.id)
+        queueItems = await window.pet.listUploads()
         renderQueue(queueItems)
-        toast('已删除')
+        toast(r && r.alreadyGone ? '库里已经没有它了，已移出队列' : '已删除')
       })
       row.appendChild(btn)
     }

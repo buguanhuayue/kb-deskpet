@@ -388,7 +388,13 @@
         throw new AuthExpiredError();
       }
       const msg = json?.message || json?.error || text || `HTTP ${res.status}`;
-      throw new Error(msg);
+      // 带上状态码与业务码：调用方需要区分「真失败」和「目标已经不在了」
+      // （WeKnora 删除是软删，重复 DELETE 必返 404 code=1003 Knowledge not found，
+      // 对「让它消失」这个意图来说那是成功，不该报错卡住队列）。
+      const err = new Error(msg);
+      err.status = res.status;
+      err.code = json?.code || json?.error?.code;
+      throw err;
     }
     return json;
   }
@@ -1092,8 +1098,19 @@
         await apiRequest(`/knowledge/${encodeURIComponent(id)}`, { method: 'DELETE' });
         return { ok: true };
       } catch (e) {
-        return { ok: false, error: e.message };
+        // 已经不存在了就按成功处理（幂等）：重复点击「移除」、或者上一次的异步删除
+        // 任务已经把行软删掉，都会走到这里。服务端用的是软删 + GORM 默认作用域
+        // （WHERE deleted_at IS NULL），同一个 id 第二次删必返 404 —— 这不是失败，
+        // 用户的意图已经达成，不能因为 404 就让队列条目永远清不掉。
+        if (e && (e.status === 404 || e.code === 1003)) return { ok: true, alreadyGone: true };
+        return { ok: false, error: e.message, status: e && e.status };
       }
+    },
+
+    // 删除成功后让 Rust 队列忘掉这一条（队列真相在 Rust 侧，面板只是镜像）
+    forgetUpload: async (id) => {
+      if (!IS_TAURI) return { ok: true };
+      return (await invoke('upload_forget', { id })) || { ok: true };
     },
 
     uploadText: async ({ title, content }) => {

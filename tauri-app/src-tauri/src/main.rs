@@ -132,6 +132,7 @@ fn main() {
             upload::upload_enqueue,
             upload::upload_list,
             upload::upload_clear,
+            upload::upload_forget,
             upload::upload_retry,
             upload::upload_set_cfg,
             upload::refresh_auth,
