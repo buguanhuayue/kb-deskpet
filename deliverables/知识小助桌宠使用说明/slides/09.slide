@@ -1,0 +1,79 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF', fontFamily: '雅黑, Arial', padding: 60, flexDirection: 'column', position: 'relative' }}>
+  <Box style={{ height: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+      <Box style={{ width: 32, height: 32, borderRadius: 8, background: '#2563EB', justifyContent: 'center', alignItems: 'center' }}>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>09</Text>
+      </Box>
+      <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.2 }}>能检索的库 ≠ 能存入的库</Text>
+    </Box>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>范围口径</Text>
+  </Box>
+  <Box style={{ height: 1, background: '#E2E8F0', marginTop: 12, marginBottom: 28 }} />
+
+  <Box style={{ height: 507, flexDirection: 'column' }}>
+    <Box style={{ height: 400, flexDirection: 'row', gap: 28 }}>
+      <Box style={{ width: 620, height: 400, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ height: 60, background: '#EFF6FF', borderRadius: 8, padding: '0px 20px', flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={{ fontSize: 18, color: '#1E40AF', fontWeight: 'bold' }}>顶栏原文：回答基于 11 个库（2 个可存入 · 9 个只读共享）</Text>
+        </Box>
+
+        <Box style={{ height: 172, flexDirection: 'row', gap: 20 }}>
+          <Box style={{ width: 172, height: 172, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ fontSize: 72, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.1 }}>11</Text>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#475569', marginTop: 8 }}>可检索</Text>
+            <Text style={{ fontSize: 16, color: '#64748B', marginTop: 4 }}>提问会翻遍</Text>
+          </Box>
+          <Box style={{ width: 172, height: 172, background: '#EFF6FF', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ fontSize: 72, fontWeight: 'bold', color: '#2563EB', lineHeight: 1.1 }}>2</Text>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#475569', marginTop: 8 }}>可存入</Text>
+            <Text style={{ fontSize: 16, color: '#64748B', marginTop: 4 }}>下拉里能选</Text>
+          </Box>
+          <Box style={{ width: 172, height: 172, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ fontSize: 72, fontWeight: 'bold', color: '#F59E0B', lineHeight: 1.1 }}>9</Text>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#475569', marginTop: 8 }}>只读共享</Text>
+            <Text style={{ fontSize: 16, color: '#64748B', marginTop: 4 }}>能查不能存</Text>
+          </Box>
+        </Box>
+
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55 }}>鼠标悬停顶栏那行可以看到具体库名；空库不参与检索。</Text>
+      </Box>
+
+      <Box style={{ width: 1, height: 400, background: '#E2E8F0' }} />
+
+      <Box style={{ width: 483, height: 400, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.35 }}>「存入」下拉只列能写入的库</Text>
+
+        <Box style={{ flexDirection: 'column' }}>
+          <Box style={{ height: 54, flexDirection: 'row', alignItems: 'center', gap: 14, borderBottom: '1px solid #E2E8F0' }}>
+            <Box style={{ width: 10, height: 10, borderRadius: 8, background: '#2563EB' }} />
+            <Text style={{ fontSize: 18, color: '#475569' }}>个人空间　你自己的库</Text>
+          </Box>
+          <Box style={{ height: 54, flexDirection: 'row', alignItems: 'center', gap: 14, borderBottom: '1px solid #E2E8F0' }}>
+            <Box style={{ width: 10, height: 10, borderRadius: 8, background: '#06B6D4' }} />
+            <Text style={{ fontSize: 18, color: '#475569' }}>××部门　共享可写库</Text>
+          </Box>
+          <Box style={{ height: 54, flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+            <Box style={{ width: 10, height: 10, borderRadius: 8, background: '#F59E0B' }} />
+            <Text style={{ fontSize: 18, color: '#475569' }}>其他空间　正常不该出现</Text>
+          </Box>
+        </Box>
+
+        <Box style={{ height: 130, background: '#F8FAFC', borderRadius: 8, padding: 18, flexDirection: 'column' }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E293B' }}>默认库怎么选</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55, marginTop: 8 }}>优先本人个人空间第一个库；自己空间没库时显示「请选择知识库」，不会擅自替你选别人的。</Text>
+        </Box>
+      </Box>
+    </Box>
+
+    <Box style={{ height: 1, background: '#E2E8F0', marginTop: 20 }} />
+    <Box style={{ height: 70, marginTop: 16, background: '#1E293B', borderRadius: 8, padding: '0px 24px', flexDirection: 'row', alignItems: 'center' }}>
+      <Box style={{ width: 6, height: 40, background: '#F59E0B', borderRadius: 8 }} />
+      <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFFFFF', marginLeft: 20 }}>下拉比顶栏少不是漏了；出现「其他空间」并选中别人的库 → 完全退出重登并找管理员</Text>
+    </Box>
+  </Box>
+
+  <Box style={{ position: 'absolute', left: 0, right: 0, bottom: 30, padding: '0px 60px', flexDirection: 'row', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>知识小助 · 桌宠使用说明</Text>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>09 / 14</Text>
+  </Box>
+</Slide>

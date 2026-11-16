@@ -1,0 +1,77 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF', fontFamily: '雅黑, Arial', padding: 60, flexDirection: 'column', position: 'relative' }}>
+  <Box style={{ height: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+      <Box style={{ width: 32, height: 32, borderRadius: 8, background: '#2563EB', justifyContent: 'center', alignItems: 'center' }}>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>12</Text>
+      </Box>
+      <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.2 }}>自动更新：启动就查，点一下就装</Text>
+    </Box>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>更新</Text>
+  </Box>
+  <Box style={{ height: 1, background: '#E2E8F0', marginTop: 12, marginBottom: 28 }} />
+
+  <Box style={{ height: 507, flexDirection: 'column' }}>
+    <Box style={{ height: 170, flexDirection: 'row', gap: 30, alignItems: 'center' }}>
+      <Box style={{ width: 208, height: 130, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'center' }}>
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1E293B' }}>启动自检</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5, marginTop: 8 }}>程序启动时自动查一次</Text>
+      </Box>
+      <Box style={{ width: 208, height: 130, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'center' }}>
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1E293B' }}>按钮红点</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5, marginTop: 8 }}>有新版本不弹窗打断</Text>
+      </Box>
+      <Box style={{ width: 208, height: 130, background: '#EFF6FF', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'center' }}>
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1E40AF' }}>发现新版本</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5, marginTop: 8 }}>卡片显示版本、日期、说明</Text>
+      </Box>
+      <Box style={{ width: 208, height: 130, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'center' }}>
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1E293B' }}>立即更新</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5, marginTop: 8 }}>「稍后」/「立即更新」，带进度条</Text>
+      </Box>
+      <Box style={{ width: 208, height: 130, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'center' }}>
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1E293B' }}>重启生效</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5, marginTop: 8 }}>包带签名，校验失败直接放弃</Text>
+      </Box>
+    </Box>
+
+    <Box style={{ height: 90, marginTop: 22, flexDirection: 'row', gap: 20 }}>
+      <Box style={{ width: 570, height: 90, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E293B' }}>macOS</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5, marginTop: 4 }}>下载完提示重启；必须装在「应用程序」才能原地替换</Text>
+      </Box>
+      <Box style={{ width: 570, height: 90, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E293B' }}>Windows</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5, marginTop: 4 }}>开始安装后应用自动退出，装完由安装器重新拉起</Text>
+      </Box>
+    </Box>
+
+    <Box style={{ height: 140, marginTop: 20, background: '#FFFFFF', borderRadius: 8, border: '1px solid #E2E8F0', padding: '6px 20px', flexDirection: 'column', justifyContent: 'space-between' }}>
+      <Box style={{ height: 31, flexDirection: 'row', alignItems: 'center', gap: 16, borderBottom: '1px solid #E2E8F0' }}>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#2563EB', width: 430 }}>latest.json 缺失或还没发布</Text>
+        <Text style={{ fontSize: 18, color: '#475569' }}>新版本正在打包，等几分钟再点「检查更新」</Text>
+      </Box>
+      <Box style={{ height: 31, flexDirection: 'row', alignItems: 'center', gap: 16, borderBottom: '1px solid #E2E8F0' }}>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#2563EB', width: 430 }}>连接更新服务器超时 / 连不上</Text>
+        <Text style={{ fontSize: 18, color: '#475569' }}>公司网络可能拦了 github.com，换个网络再试</Text>
+      </Box>
+      <Box style={{ height: 31, flexDirection: 'row', alignItems: 'center', gap: 16, borderBottom: '1px solid #E2E8F0' }}>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#2563EB', width: 430 }}>没有写入权限</Text>
+        <Text style={{ fontSize: 18, color: '#475569' }}>把「知识小助」拖进「应用程序」再打开</Text>
+      </Box>
+      <Box style={{ height: 31, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#2563EB', width: 430 }}>更新包校验失败，已放弃安装</Text>
+        <Text style={{ fontSize: 18, color: '#475569' }}>包可能损坏或被替换，重新下载 / 找管理员</Text>
+      </Box>
+    </Box>
+
+    <Box style={{ height: 47, marginTop: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+      <Text style={{ fontSize: 18, color: '#475569' }}>手动检查：打开侧栏 → 左下角「检查更新」</Text>
+      <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#2563EB' }}>已是最新会提示「已是最新版本 v0.8.21」</Text>
+    </Box>
+  </Box>
+
+  <Box style={{ position: 'absolute', left: 0, right: 0, bottom: 30, padding: '0px 60px', flexDirection: 'row', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>知识小助 · 桌宠使用说明</Text>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>12 / 14</Text>
+  </Box>
+</Slide>

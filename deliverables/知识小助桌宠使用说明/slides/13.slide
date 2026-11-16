@@ -1,0 +1,66 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF', fontFamily: '雅黑, Arial', padding: 60, flexDirection: 'column', position: 'relative' }}>
+  <Box style={{ height: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+      <Box style={{ width: 32, height: 32, borderRadius: 8, background: '#2563EB', justifyContent: 'center', alignItems: 'center' }}>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>13</Text>
+      </Box>
+      <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.2 }}>这些别当成功能</Text>
+    </Box>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>边界</Text>
+  </Box>
+  <Box style={{ height: 1, background: '#E2E8F0', marginTop: 12, marginBottom: 28 }} />
+
+  <Box style={{ height: 507, flexDirection: 'column' }}>
+    <Box style={{ height: 400, flexDirection: 'row', gap: 28 }}>
+      <Box style={{ width: 566, height: 400, background: '#EFF6FF', borderRadius: 8, padding: 24, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <Box style={{ width: 32, height: 32, borderRadius: 8, background: '#2563EB', justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>✓</Text>
+          </Box>
+          <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1E293B' }}>照着做就行</Text>
+        </Box>
+
+        <Box style={{ flexDirection: 'column', gap: 12 }}>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>拖文件进来 → 确认清单 → 点「存入」</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>选文件 / 选文件夹 / 写一段文字</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>点答案末尾的引用条核对原文</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>上传队列「清理已完成」、失败项「重试」</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>侧栏左下「检查更新」、⌘ 菜单「打开网页端」</Text>
+        </Box>
+
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1E40AF' }}>以上都在当前 v0.8.21 里真实可用</Text>
+      </Box>
+
+      <Box style={{ width: 566, height: 400, background: '#F8FAFC', borderRadius: 8, padding: 24, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <Box style={{ width: 32, height: 32, borderRadius: 8, background: '#F59E0B', justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>!</Text>
+          </Box>
+          <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1E293B' }}>别当成功能</Text>
+        </Box>
+
+        <Box style={{ flexDirection: 'column', gap: 9 }}>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.45 }}>⌘⇧U 全局快捷键：只是按钮提示文案，未注册</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.45 }}>「松手就入库」：早期提示语，拖进来不会自动传</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.45 }}>系统托盘 / 关闭到托盘：没有托盘图标</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.45 }}>粘贴截图入库：接口是占位实现，恒提示没有图片</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.45 }}>右键功能菜单：右键只切换面板显隐</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.45 }}>浏览器地址 + 访问口令：那是旧网页版</Text>
+        </Box>
+
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#B45309' }}>客户端也没有文件扩展名白名单</Text>
+      </Box>
+    </Box>
+
+    <Box style={{ height: 1, background: '#E2E8F0', marginTop: 20 }} />
+    <Box style={{ height: 70, marginTop: 16, background: '#1E293B', borderRadius: 8, padding: '0px 24px', flexDirection: 'row', alignItems: 'center' }}>
+      <Box style={{ width: 6, height: 40, background: '#F59E0B', borderRadius: 8 }} />
+      <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFFFFF', marginLeft: 20 }}>旧 docs/09-使用手册.md 写的是浏览器版，已过时；以 docs/17-桌宠使用说明.md 为准</Text>
+    </Box>
+  </Box>
+
+  <Box style={{ position: 'absolute', left: 0, right: 0, bottom: 30, padding: '0px 60px', flexDirection: 'row', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>知识小助 · 桌宠使用说明</Text>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>13 / 14</Text>
+  </Box>
+</Slide>

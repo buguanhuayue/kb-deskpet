@@ -1,0 +1,89 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF', fontFamily: '雅黑, Arial', padding: 60, flexDirection: 'column', position: 'relative' }}>
+  <Box style={{ height: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+      <Box style={{ width: 32, height: 32, borderRadius: 8, background: '#2563EB', justifyContent: 'center', alignItems: 'center' }}>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>04</Text>
+      </Box>
+      <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.2 }}>装好这一步，更新才不会失败</Text>
+    </Box>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>安装</Text>
+  </Box>
+  <Box style={{ height: 1, background: '#E2E8F0', marginTop: 12, marginBottom: 28 }} />
+
+  <Box style={{ height: 507, flexDirection: 'column' }}>
+    <Box style={{ height: 462, flexDirection: 'row', gap: 28 }}>
+      <Box style={{ width: 550, height: 462, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ height: 34, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1E293B' }}>macOS</Text>
+          <Box style={{ background: '#EFF6FF', borderRadius: 8, padding: '4px 12px' }}>
+            <Text style={{ fontSize: 14, color: '#1E40AF' }}>仅 Apple Silicon / M 系列</Text>
+          </Box>
+        </Box>
+
+        <Box style={{ height: 62, background: '#F8FAFC', borderRadius: 8, padding: '12px 18px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E293B' }}>_0.8.21_aarch64.dmg</Text>
+          <Text style={{ fontSize: 14, color: '#64748B' }}>约 8.4 MB</Text>
+        </Box>
+
+        <Box style={{ height: 76, flexDirection: 'column', justifyContent: 'space-between' }}>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>1　打开 dmg，把「知识小助」拖进「应用程序」</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>2　从「应用程序」里启动，右下角出现小桌宠</Text>
+        </Box>
+
+        <Box style={{ height: 176, background: '#1E293B', borderRadius: 8, padding: 20, flexDirection: 'column' }}>
+          <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <Box style={{ width: 8, height: 8, borderRadius: 8, background: '#F59E0B' }} />
+            <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>不要直接在 dmg 里双击运行</Text>
+          </Box>
+          <Text style={{ fontSize: 18, color: '#CBD5E1', lineHeight: 1.55, marginTop: 12 }}>
+            程序不在「应用程序」里就无法原地替换。之后点「立即更新」会被拦下，提示先把「知识小助」拖进去。这一步不做，自动更新永远失败。
+          </Text>
+        </Box>
+
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>首次被系统拦下：系统设置 → 隐私与安全性 → 仍要打开</Text>
+      </Box>
+
+      <Box style={{ width: 1, height: 462, background: '#E2E8F0' }} />
+
+      <Box style={{ width: 550, height: 462, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ height: 34, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1E293B' }}>Windows</Text>
+          <Box style={{ background: '#EFF6FF', borderRadius: 8, padding: '4px 12px' }}>
+            <Text style={{ fontSize: 14, color: '#1E40AF' }}>x64 · NSIS 简体中文</Text>
+          </Box>
+        </Box>
+
+        <Box style={{ height: 62, background: '#F8FAFC', borderRadius: 8, padding: '12px 18px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E293B' }}>_0.8.21_x64-setup.exe</Text>
+          <Text style={{ fontSize: 14, color: '#64748B' }}>约 6.0 MB</Text>
+        </Box>
+
+        <Box style={{ height: 76, flexDirection: 'column', justifyContent: 'space-between' }}>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>双击安装包，按提示装完即可</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>首次启动先在面板里用知识库账号登录</Text>
+        </Box>
+
+        <Box style={{ height: 120, background: '#EFF6FF', borderRadius: 8, padding: 18, flexDirection: 'column' }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E40AF' }}>更新是静默安装</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55, marginTop: 8 }}>开始安装后应用会自动退出，装完由安装器自己重新拉起。</Text>
+        </Box>
+
+        <Box style={{ height: 100, background: '#F8FAFC', borderRadius: 8, padding: 18, flexDirection: 'column' }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E293B' }}>Intel Mac 暂无构建</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5, marginTop: 6 }}>当前只发布 aarch64 版，如需 Intel 版请联系管理员。</Text>
+        </Box>
+      </Box>
+    </Box>
+
+    <Box style={{ height: 1, background: '#E2E8F0', marginTop: 14 }} />
+    <Box style={{ height: 30, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+      <Text style={{ fontSize: 18, color: '#475569' }}>发布页 github.com/buguanhuayue/kb-deskpet/releases/latest</Text>
+      <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#2563EB' }}>通常由管理员直接发安装包</Text>
+    </Box>
+  </Box>
+
+  <Box style={{ position: 'absolute', left: 0, right: 0, bottom: 30, padding: '0px 60px', flexDirection: 'row', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>知识小助 · 桌宠使用说明</Text>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>04 / 14</Text>
+  </Box>
+</Slide>

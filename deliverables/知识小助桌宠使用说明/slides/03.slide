@@ -1,0 +1,85 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF', fontFamily: '雅黑, Arial', padding: 60, flexDirection: 'column', position: 'relative' }}>
+  <Box style={{ height: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+      <Box style={{ width: 32, height: 32, borderRadius: 8, background: '#2563EB', justifyContent: 'center', alignItems: 'center' }}>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>03</Text>
+      </Box>
+      <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.2 }}>两个窗口，各管一件事</Text>
+    </Box>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>界面</Text>
+  </Box>
+  <Box style={{ height: 1, background: '#E2E8F0', marginTop: 12, marginBottom: 28 }} />
+
+  <Box style={{ height: 507, flexDirection: 'row', gap: 40 }}>
+    <Box style={{ width: 700, height: 507, background: '#F8FAFC', borderRadius: 8, justifyContent: 'center', alignItems: 'center' }}>
+      <svg width={660} height={440} viewBox='0 0 660 440'>
+        <rect x='16' y='20' width='540' height='392' rx='14' fill='#FFFFFF' stroke='#CBD5E1' strokeWidth='2' />
+        <line x1='16' y1='60' x2='556' y2='60' stroke='#E2E8F0' strokeWidth='1' />
+        <circle cx='38' cy='40' r='5' fill='#2563EB' />
+        <circle cx='54' cy='40' r='5' fill='#CBD5E1' />
+        <circle cx='70' cy='40' r='5' fill='#CBD5E1' />
+        <rect x='210' y='32' width='190' height='16' rx='8' fill='#EFF6FF' />
+        <rect x='16' y='60' width='118' height='352' fill='#F8FAFC' />
+        <rect x='28' y='80' width='94' height='22' rx='6' fill='#2563EB' />
+        <rect x='28' y='116' width='94' height='16' rx='6' fill='#E2E8F0' />
+        <rect x='28' y='142' width='94' height='16' rx='6' fill='#E2E8F0' />
+        <rect x='28' y='168' width='94' height='16' rx='6' fill='#E2E8F0' />
+        <rect x='160' y='88' width='220' height='48' rx='10' fill='#EFF6FF' />
+        <rect x='176' y='104' width='168' height='8' rx='4' fill='#BFDBFE' />
+        <rect x='176' y='120' width='112' height='8' rx='4' fill='#BFDBFE' />
+        <rect x='162' y='156' width='352' height='78' rx='10' fill='#2563EB' />
+        <rect x='180' y='174' width='300' height='8' rx='4' fill='#93C5FD' />
+        <rect x='180' y='192' width='276' height='8' rx='4' fill='#93C5FD' />
+        <rect x='180' y='210' width='160' height='8' rx='4' fill='#93C5FD' />
+        <rect x='160' y='256' width='360' height='72' rx='10' fill='#F8FAFC' stroke='#E2E8F0' strokeWidth='1' />
+        <rect x='176' y='272' width='150' height='10' rx='5' fill='#CBD5E1' />
+        <rect x='176' y='294' width='210' height='10' rx='5' fill='#E2E8F0' />
+        <rect x='152' y='356' width='384' height='40' rx='10' fill='#F8FAFC' stroke='#E2E8F0' strokeWidth='1' />
+        <rect x='160' y='364' width='96' height='24' rx='6' fill='#2563EB' />
+        <rect x='270' y='370' width='160' height='8' rx='4' fill='#E2E8F0' />
+        <rect x='480' y='362' width='48' height='28' rx='6' fill='#DBEAFE' />
+        <path d='M556 300 L570 300 L570 356' fill='none' stroke='#06B6D4' strokeWidth='2' strokeDasharray='6 5' />
+        <rect x='566' y='346' width='86' height='82' rx='16' fill='#FFFFFF' stroke='#2563EB' strokeWidth='3' />
+        <circle cx='609' cy='380' r='24' fill='#DBEAFE' />
+        <circle cx='600' cy='376' r='4' fill='#1E3A8A' />
+        <circle cx='618' cy='376' r='4' fill='#1E3A8A' />
+        <path d='M601 389 Q609 396 617 389' fill='none' stroke='#1E3A8A' strokeWidth='2' />
+        <rect x='480' y='312' width='66' height='26' rx='8' fill='#F59E0B' />
+      </svg>
+    </Box>
+
+    <Box style={{ width: 420, height: 507, flexDirection: 'column', justifyContent: 'space-between' }}>
+      <Box style={{ flexDirection: 'column' }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Box style={{ width: 10, height: 10, borderRadius: 8, background: '#2563EB' }} />
+          <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1E293B' }}>桌宠 · 小窗口</Text>
+        </Box>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55, marginTop: 12 }}>
+          常驻屏幕右下角，112×110 透明置顶。按住可拖动，单击打开面板，右键切换面板显隐。头顶气泡显示上传进度。
+        </Text>
+      </Box>
+
+      <Box style={{ flexDirection: 'column' }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Box style={{ width: 10, height: 10, borderRadius: 8, background: '#06B6D4' }} />
+          <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1E293B' }}>问答面板 · 大窗口</Text>
+        </Box>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55, marginTop: 12 }}>
+          760×720、默认隐藏。登录、提问、会话、选知识库、存入资料、上传队列、检查更新都在这里完成。
+        </Text>
+      </Box>
+
+      <Box style={{ background: '#EFF6FF', borderRadius: 8, padding: 20, flexDirection: 'column' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E40AF', lineHeight: 1.35 }}>关掉面板不会中断上传</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55, marginTop: 8 }}>
+          队列由程序原生层维护，两个窗口同步进度；切会话、收面板都不影响。
+        </Text>
+      </Box>
+    </Box>
+  </Box>
+
+  <Box style={{ position: 'absolute', left: 0, right: 0, bottom: 30, padding: '0px 60px', flexDirection: 'row', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>知识小助 · 桌宠使用说明</Text>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>03 / 14</Text>
+  </Box>
+</Slide>

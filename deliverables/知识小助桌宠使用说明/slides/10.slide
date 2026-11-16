@@ -1,0 +1,91 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF', fontFamily: '雅黑, Arial', padding: 60, flexDirection: 'column', position: 'relative' }}>
+  <Box style={{ height: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+      <Box style={{ width: 32, height: 32, borderRadius: 8, background: '#2563EB', justifyContent: 'center', alignItems: 'center' }}>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>10</Text>
+      </Box>
+      <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.2 }}>上传队列：六个状态，一眼看懂</Text>
+    </Box>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>看结果</Text>
+  </Box>
+  <Box style={{ height: 1, background: '#E2E8F0', marginTop: 12, marginBottom: 28 }} />
+
+  <Box style={{ height: 507, flexDirection: 'column' }}>
+    <Box style={{ height: 180, flexDirection: 'row', gap: 16, alignItems: 'center' }}>
+      <Box style={{ width: 180, height: 160, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ width: 40, height: 6, borderRadius: 8, background: '#94A3B8' }} />
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1E293B' }}>排队中</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>等前面的传完，同一时间只传一个</Text>
+      </Box>
+      <Box style={{ width: 180, height: 160, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ width: 40, height: 6, borderRadius: 8, background: '#2563EB' }} />
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1E293B' }}>上传中</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>正在把文件传给服务器</Text>
+      </Box>
+      <Box style={{ width: 180, height: 160, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ width: 40, height: 6, borderRadius: 8, background: '#06B6D4' }} />
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1E293B' }}>解析中</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>切片、向量化；「整理中」会带耗时</Text>
+      </Box>
+      <Box style={{ width: 180, height: 160, background: '#EFF6FF', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ width: 40, height: 6, borderRadius: 8, background: '#2563EB' }} />
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1E40AF' }}>已入库</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>完成，同事可以搜到了</Text>
+      </Box>
+      <Box style={{ width: 180, height: 160, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ width: 40, height: 6, borderRadius: 8, background: '#94A3B8' }} />
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1E293B' }}>已存在</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>库里已有，跳过重复上传</Text>
+      </Box>
+      <Box style={{ width: 180, height: 160, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ width: 40, height: 6, borderRadius: 8, background: '#F59E0B' }} />
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1E293B' }}>失败</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>右侧给原因和「重试」按钮</Text>
+      </Box>
+    </Box>
+
+    <Box style={{ height: 96, marginTop: 24, flexDirection: 'row', gap: 20 }}>
+      <Box style={{ width: 570, height: 96, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E293B' }}>「重试」</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5, marginTop: 4 }}>只重传这一条失败的；常见原因是超过 50MB、断网、登录过期</Text>
+      </Box>
+      <Box style={{ width: 570, height: 96, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#B45309' }}>「移除」要小心</Text>
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5, marginTop: 4 }}>会真的把这一篇从知识库删掉、同事搜不到，需二次确认</Text>
+      </Box>
+    </Box>
+
+    <Box style={{ height: 88, marginTop: 22, background: '#EFF6FF', borderRadius: 8, padding: '0px 20px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+      <Box style={{ flexDirection: 'column', alignItems: 'center' }}>
+        <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#2563EB' }}>50 MB</Text>
+        <Text style={{ fontSize: 16, color: '#64748B', marginTop: 4 }}>单文件上限</Text>
+      </Box>
+      <Box style={{ flexDirection: 'column', alignItems: 'center' }}>
+        <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#2563EB' }}>500 项</Text>
+        <Text style={{ fontSize: 16, color: '#64748B', marginTop: 4 }}>单批上限</Text>
+      </Box>
+      <Box style={{ flexDirection: 'column', alignItems: 'center' }}>
+        <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#2563EB' }}>8 层</Text>
+        <Text style={{ fontSize: 16, color: '#64748B', marginTop: 4 }}>文件夹递归</Text>
+      </Box>
+      <Box style={{ flexDirection: 'column', alignItems: 'center' }}>
+        <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#2563EB' }}>串行</Text>
+        <Text style={{ fontSize: 16, color: '#64748B', marginTop: 4 }}>一次传一个</Text>
+      </Box>
+      <Box style={{ flexDirection: 'column', alignItems: 'center' }}>
+        <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#2563EB' }}>约 5 分钟</Text>
+        <Text style={{ fontSize: 16, color: '#64748B', marginTop: 4 }}>解析轮询，超时不判失败</Text>
+      </Box>
+    </Box>
+
+    <Box style={{ height: 77, marginTop: 20, background: '#1E293B', borderRadius: 8, padding: '0px 24px', flexDirection: 'row', alignItems: 'center' }}>
+      <Box style={{ width: 6, height: 44, background: '#F59E0B', borderRadius: 8 }} />
+      <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF', marginLeft: 20 }}>只有「已入库」才算能搜到；收起面板、切会话都不会中断上传</Text>
+    </Box>
+  </Box>
+
+  <Box style={{ position: 'absolute', left: 0, right: 0, bottom: 30, padding: '0px 60px', flexDirection: 'row', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>知识小助 · 桌宠使用说明</Text>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>10 / 14</Text>
+  </Box>
+</Slide>

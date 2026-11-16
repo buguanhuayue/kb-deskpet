@@ -1,0 +1,65 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF', fontFamily: '雅黑, Arial', padding: 60, flexDirection: 'column', position: 'relative' }}>
+  <Box style={{ height: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+      <Box style={{ width: 32, height: 32, borderRadius: 8, background: '#2563EB', justifyContent: 'center', alignItems: 'center' }}>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>07</Text>
+      </Box>
+      <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.2 }}>拖进来 ≠ 存进去</Text>
+    </Box>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>存资料 · 核心</Text>
+  </Box>
+  <Box style={{ height: 1, background: '#E2E8F0', marginTop: 12, marginBottom: 28 }} />
+
+  <Box style={{ height: 507, flexDirection: 'column' }}>
+    <Box style={{ height: 280, flexDirection: 'row', gap: 32 }}>
+      <Box style={{ width: 380, height: 280, flexDirection: 'column', justifyContent: 'center' }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 10 }}>
+          <Text style={{ fontSize: 112, fontWeight: 'bold', color: '#F59E0B', lineHeight: 1.05 }}>2</Text>
+          <Text style={{ fontSize: 40, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.4, marginBottom: 14 }}>步</Text>
+        </Box>
+        <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.4, marginTop: 14 }}>从拖进来到真的上传</Text>
+        <Box style={{ width: 300, height: 1, background: '#E2E8F0', marginTop: 16 }} />
+        <Text style={{ fontSize: 18, color: '#64748B', lineHeight: 1.55, marginTop: 12 }}>中间隔着一次必须点的按钮</Text>
+      </Box>
+
+      <Box style={{ width: 748, height: 280, flexDirection: 'row', gap: 24 }}>
+        <Box style={{ width: 362, height: 280, background: '#F8FAFC', borderRadius: 8, padding: 24, flexDirection: 'column', justifyContent: 'space-between' }}>
+          <Box style={{ width: 36, height: 36, borderRadius: 8, background: '#2563EB', justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>1</Text>
+          </Box>
+          <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.3 }}>暂存</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55 }}>拖进来、选文件、写一段文字，都只进「待存入清单」。此时什么都没上传。</Text>
+          <Box style={{ height: 40, borderRadius: 8, background: '#E2E8F0', justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ fontSize: 16, color: '#64748B' }}>「存入」按钮此时还是灰的</Text>
+          </Box>
+        </Box>
+
+        <Box style={{ width: 362, height: 280, background: '#EFF6FF', borderRadius: 8, border: '2px solid #2563EB', padding: 24, flexDirection: 'column', justifyContent: 'space-between' }}>
+          <Box style={{ width: 36, height: 36, borderRadius: 8, background: '#F59E0B', justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>2</Text>
+          </Box>
+          <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.3 }}>存入</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55 }}>点右下角「存入」才真正提交，聊天区随后给「已加入上传队列」的回执。</Text>
+          <Box style={{ height: 40, borderRadius: 8, background: '#2563EB', justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFFFFF' }}>存入</Text>
+          </Box>
+        </Box>
+      </Box>
+    </Box>
+
+    <Box style={{ height: 105, marginTop: 24, background: '#1E293B', borderRadius: 8, padding: 24, flexDirection: 'column', justifyContent: 'center' }}>
+      <Text style={{ fontSize: 28, fontWeight: 'bold', color: '#FFFFFF', lineHeight: 1.35 }}>「已加入上传队列」不等于「已经能搜到」</Text>
+      <Text style={{ fontSize: 18, color: '#CBD5E1', lineHeight: 1.5, marginTop: 8 }}>真实结果要等这一批跑完，才在聊天区汇总播报；看队列状态最准。</Text>
+    </Box>
+
+    <Box style={{ height: 76, marginTop: 22, flexDirection: 'column', justifyContent: 'space-between' }}>
+      <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>界面原话：「先放进来，看清了再存 —— 不会替你自动上传」</Text>
+      <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.5 }}>小桌宠身上的「松手就入库」是早期提示语，别当真。</Text>
+    </Box>
+  </Box>
+
+  <Box style={{ position: 'absolute', left: 0, right: 0, bottom: 30, padding: '0px 60px', flexDirection: 'row', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>知识小助 · 桌宠使用说明</Text>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>07 / 14</Text>
+  </Box>
+</Slide>

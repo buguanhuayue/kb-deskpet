@@ -1,0 +1,82 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF', fontFamily: '雅黑, Arial', padding: 60, flexDirection: 'column', position: 'relative' }}>
+  <Box style={{ height: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+      <Box style={{ width: 32, height: 32, borderRadius: 8, background: '#2563EB', justifyContent: 'center', alignItems: 'center' }}>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>05</Text>
+      </Box>
+      <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.2 }}>登录：三个框，一次重登</Text>
+    </Box>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>登录</Text>
+  </Box>
+  <Box style={{ height: 1, background: '#E2E8F0', marginTop: 12, marginBottom: 28 }} />
+
+  <Box style={{ height: 507, flexDirection: 'row', gap: 32 }}>
+    <Box style={{ width: 330, height: 507, background: '#2563EB', borderRadius: 8, padding: 30, flexDirection: 'column', justifyContent: 'space-between' }}>
+      <Box style={{ flexDirection: 'column' }}>
+        <Text style={{ fontSize: 16, color: '#BFDBFE', fontWeight: 'bold' }}>STEP 02</Text>
+        <Text style={{ fontSize: 56, fontWeight: 'bold', color: '#FFFFFF', lineHeight: 1.2, marginTop: 20 }}>登录</Text>
+        <Text style={{ fontSize: 22, color: '#DBEAFE', lineHeight: 1.5, marginTop: 14 }}>用知识库账号，不用浏览器，也没有「访问口令」</Text>
+      </Box>
+
+      <Box style={{ flexDirection: 'column', gap: 14 }}>
+        <Box style={{ height: 46, borderRadius: 8, background: '#FFFFFF', opacity: 0.95, justifyContent: 'center', padding: '0px 14px' }}>
+          <Text style={{ fontSize: 16, color: '#94A3B8' }}>服务器地址</Text>
+        </Box>
+        <Box style={{ height: 46, borderRadius: 8, background: '#FFFFFF', opacity: 0.95, justifyContent: 'center', padding: '0px 14px' }}>
+          <Text style={{ fontSize: 16, color: '#94A3B8' }}>账号</Text>
+        </Box>
+        <Box style={{ height: 46, borderRadius: 8, background: '#FFFFFF', opacity: 0.95, justifyContent: 'center', padding: '0px 14px' }}>
+          <Text style={{ fontSize: 16, color: '#94A3B8' }}>密码</Text>
+        </Box>
+        <Box style={{ height: 46, borderRadius: 8, background: '#F59E0B', justifyContent: 'center', alignItems: 'center' }}>
+          <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFFFFF' }}>登录</Text>
+        </Box>
+      </Box>
+
+      <Text style={{ fontSize: 14, color: '#BFDBFE', lineHeight: 1.5 }}>侧栏底部会显示账号 · 工作区 · 版本号</Text>
+    </Box>
+
+    <Box style={{ width: 798, height: 507, flexDirection: 'column', justifyContent: 'space-between' }}>
+      <Box style={{ flexDirection: 'column' }}>
+        <Box style={{ height: 62, flexDirection: 'row', alignItems: 'center', gap: 20, borderBottom: '1px solid #E2E8F0' }}>
+          <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#2563EB', width: 140 }}>服务器地址</Text>
+          <Text style={{ fontSize: 18, color: '#475569' }}>https://knowledge.xinyeonline.com.cn　默认已填，一般不用改</Text>
+        </Box>
+        <Box style={{ height: 62, flexDirection: 'row', alignItems: 'center', gap: 20, borderBottom: '1px solid #E2E8F0' }}>
+          <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#2563EB', width: 140 }}>账号</Text>
+          <Text style={{ fontSize: 18, color: '#475569' }}>zhangsan　或　zhangsan@company.local</Text>
+        </Box>
+        <Box style={{ height: 62, flexDirection: 'row', alignItems: 'center', gap: 20 }}>
+          <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#2563EB', width: 140 }}>密码</Text>
+          <Text style={{ fontSize: 18, color: '#475569' }}>管理员分配；在密码框按 Enter 也能登录</Text>
+        </Box>
+      </Box>
+
+      <Box style={{ height: 104, flexDirection: 'row', gap: 20 }}>
+        <Box style={{ width: 389, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column' }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E293B' }}>连不上？网络自检</Text>
+          <Text style={{ fontSize: 16, color: '#64748B', lineHeight: 1.5, marginTop: 6 }}>会去探测服务器 /health；先确认网络或 VPN</Text>
+        </Box>
+        <Box style={{ width: 389, background: '#F8FAFC', borderRadius: 8, padding: 16, flexDirection: 'column' }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E293B' }}>看不到任何知识库</Text>
+          <Text style={{ fontSize: 16, color: '#64748B', lineHeight: 1.5, marginTop: 6 }}>提示「找管理员开通」＝账号还没进组织</Text>
+        </Box>
+      </Box>
+
+      <Box style={{ height: 138, background: '#1E293B', borderRadius: 8, padding: 22, flexDirection: 'column' }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Box style={{ width: 8, height: 8, borderRadius: 8, background: '#F59E0B' }} />
+          <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF' }}>账号 / 空间 / 权限被调整后，必须重登</Text>
+        </Box>
+        <Text style={{ fontSize: 18, color: '#CBD5E1', lineHeight: 1.55, marginTop: 12 }}>
+          完全退出应用 → 重新打开 → 重新登录。不是关面板，也不是只点「退出登录」。旧登录信息缓存着旧工作区，不重登会让上传整批失败（403）。
+        </Text>
+      </Box>
+    </Box>
+  </Box>
+
+  <Box style={{ position: 'absolute', left: 0, right: 0, bottom: 30, padding: '0px 60px', flexDirection: 'row', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>知识小助 · 桌宠使用说明</Text>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>05 / 14</Text>
+  </Box>
+</Slide>

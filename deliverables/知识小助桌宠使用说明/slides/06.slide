@@ -1,0 +1,89 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF', fontFamily: '雅黑, Arial', padding: 60, flexDirection: 'column', position: 'relative' }}>
+  <Box style={{ height: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+      <Box style={{ width: 32, height: 32, borderRadius: 8, background: '#2563EB', justifyContent: 'center', alignItems: 'center' }}>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>06</Text>
+      </Box>
+      <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.2 }}>提问：一次问，翻遍所有能看的库</Text>
+    </Box>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>提问</Text>
+  </Box>
+  <Box style={{ height: 1, background: '#E2E8F0', marginTop: 12, marginBottom: 28 }} />
+
+  <Box style={{ height: 507, flexDirection: 'column' }}>
+    <Box style={{ height: 407, flexDirection: 'row', gap: 20 }}>
+      <Box style={{ width: 480, height: 407, background: '#EFF6FF', borderRadius: 8, padding: 24, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Box style={{ width: 10, height: 10, borderRadius: 8, background: '#2563EB' }} />
+          <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1E293B' }}>怎么问</Text>
+        </Box>
+
+        <Box style={{ height: 76, background: '#FFFFFF', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'center' }}>
+          <Text style={{ fontSize: 18, color: '#64748B', lineHeight: 1.5 }}>问点什么…</Text>
+          <Text style={{ fontSize: 16, color: '#94A3B8', lineHeight: 1.5, marginTop: 4 }}>Enter 发送　·　Shift + Enter 换行</Text>
+        </Box>
+
+        <Box style={{ height: 76, background: '#FFFFFF', borderRadius: 8, padding: 16, flexDirection: 'column', justifyContent: 'center' }}>
+          <Text style={{ fontSize: 14, color: '#94A3B8' }}>比如</Text>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E40AF', lineHeight: 1.4, marginTop: 4 }}>差旅报销的住宿上限是多少？</Text>
+        </Box>
+
+        <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55 }}>回答时先显示「正在检索 N 个知识库…」，然后流式出答案。</Text>
+      </Box>
+
+      <Box style={{ width: 360, height: 407, background: '#F8FAFC', borderRadius: 8, padding: 24, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Box style={{ width: 10, height: 10, borderRadius: 8, background: '#06B6D4' }} />
+          <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1E293B' }}>答案里有什么</Text>
+        </Box>
+
+        <Box style={{ flexDirection: 'column', gap: 14 }}>
+          <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+            <Box style={{ width: 8, height: 8, borderRadius: 8, background: '#2563EB', marginTop: 9 }} />
+            <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55 }}>支持 Markdown 排版，长答案分段显示</Text>
+          </Box>
+          <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+            <Box style={{ width: 8, height: 8, borderRadius: 8, background: '#2563EB', marginTop: 9 }} />
+            <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55 }}>末尾有引用条，点开可看原文片段</Text>
+          </Box>
+          <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+            <Box style={{ width: 8, height: 8, borderRadius: 8, background: '#2563EB', marginTop: 9 }} />
+            <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55 }}>库里内容少时会提示核对原文</Text>
+          </Box>
+        </Box>
+
+        <Box style={{ height: 66, background: '#FFFFFF', borderRadius: 8, padding: 14, justifyContent: 'center' }}>
+          <Text style={{ fontSize: 18, color: '#1E40AF', fontWeight: 'bold' }}>还有「存一份相关资料」</Text>
+          <Text style={{ fontSize: 16, color: '#64748B', lineHeight: 1.4, marginTop: 4 }}>点了直接打开存入面板</Text>
+        </Box>
+      </Box>
+
+      <Box style={{ width: 280, height: 407, background: '#FFFFFF', borderRadius: 8, border: '1px solid #E2E8F0', padding: 24, flexDirection: 'column', justifyContent: 'space-between' }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Box style={{ width: 10, height: 10, borderRadius: 8, background: '#F59E0B' }} />
+          <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1E293B' }}>会被拦下</Text>
+        </Box>
+
+        <Box style={{ flexDirection: 'column' }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.4 }}>回答还没出完</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55, marginTop: 8 }}>不能切知识库、不能提交资料，会提示「等它答完再…」</Text>
+        </Box>
+
+        <Box style={{ flexDirection: 'column' }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E293B', lineHeight: 1.4 }}>输入一大段文字</Text>
+          <Text style={{ fontSize: 18, color: '#475569', lineHeight: 1.55, marginTop: 8 }}>界面会问「这段更像资料」：存进知识库 / 继续提问</Text>
+        </Box>
+      </Box>
+    </Box>
+
+    <Box style={{ height: 76, marginTop: 24, background: '#1E293B', borderRadius: 8, padding: '0px 26px', flexDirection: 'row', alignItems: 'center' }}>
+      <Box style={{ width: 6, height: 44, background: '#F59E0B', borderRadius: 8 }} />
+      <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF', marginLeft: 22 }}>回答覆盖当前工作区所有能访问的库，不是只查你选中的那一个</Text>
+    </Box>
+  </Box>
+
+  <Box style={{ position: 'absolute', left: 0, right: 0, bottom: 30, padding: '0px 60px', flexDirection: 'row', justifyContent: 'space-between' }}>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>知识小助 · 桌宠使用说明</Text>
+    <Text style={{ fontSize: 14, color: '#94A3B8' }}>06 / 14</Text>
+  </Box>
+</Slide>
