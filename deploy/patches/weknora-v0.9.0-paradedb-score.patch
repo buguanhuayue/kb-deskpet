@@ -1,0 +1,20 @@
+--- a/internal/application/repository/retriever/postgres/repository.go
++++ b/internal/application/repository/retriever/postgres/repository.go
+@@ -409,7 +409,7 @@
+ 			allVars = append(allVars, id)
+ 		}
+ 		whereParts = append(whereParts, fmt.Sprintf(
+-			"NOT (knowledge_base_id IN (%s) AND %s)",
++			"((NOT (knowledge_base_id IN (%s) AND %s)) IS TRUE)",
+ 			strings.Join(placeholders, ", "),
+ 			types.GeneratedQuestionRowPredicate(""),
+ 		))
+@@ -802,7 +802,7 @@
+ 	}
+ 	return clause.Expr{
+ 		SQL: fmt.Sprintf(
+-			"NOT (knowledge_base_id IN (%s) AND %s)",
++			"((NOT (knowledge_base_id IN (%s) AND %s)) IS TRUE)",
+ 			strings.Join(placeholders, ", "),
+ 			types.GeneratedQuestionRowPredicate(""),
+ 		),
