@@ -22,3 +22,5 @@ tauri-plugin-store = "2"
 tokio = { version = "1", features = ["time", "sync"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
+# 打开外链：webview 的 window.open 不会转给系统浏览器，必须走这个插件
+tauri-plugin-opener = "2"

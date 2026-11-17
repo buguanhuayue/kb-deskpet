@@ -117,6 +117,35 @@
 
   const tauriObj = window.__TAURI__;
   const IS_TAURI = !!tauriObj;
+
+  // 打开外链。webview 里的 window.open 不会交给系统浏览器：Tauri 把它当作「新建窗口」
+  // 拦截，而本应用只声明了 pet / panel 两个固定窗口，于是请求被直接丢弃，点了毫无反应。
+  // 必须走 opener 插件的 plugin:opener|open_url。
+  // 这里刻意不复用上面的 invoke()：它 catch 后一律 return null，成功与失败都是 null，
+  // 等于把「权限没配 / 插件没装」又变成一次静默失败 —— 失败必须能被用户看见。
+  const openExternal = async (url) => {
+    const target = String(url == null ? '' : url).trim();
+    if (!target) {
+      broadcast('toast', { text: '没有可打开的地址', kind: 'warn' });
+      return { ok: false, error: 'empty url' };
+    }
+    if (!IS_TAURI) {
+      // 纯浏览器预览（调样式）时的降级：这里 window.open 是有效的
+      window.open(target, '_blank');
+      return { ok: true };
+    }
+    const core = tauriObj?.core || tauriObj;
+    try {
+      if (!core || typeof core.invoke !== 'function') throw new Error('IPC 不可用');
+      await core.invoke('plugin:opener|open_url', { url: target });
+      return { ok: true };
+    } catch (e) {
+      const msg = String((e && e.message) || e || '未知错误');
+      console.warn('[openExternal] 打开失败', target, e);
+      broadcast('toast', { text: `打不开浏览器：${msg}`, kind: 'warn' });
+      return { ok: false, error: msg };
+    }
+  };
   const eventMod = tauriObj?.event || (tauriObj?.core && tauriObj.core.event);
   if (eventMod && typeof eventMod.listen === 'function') {
     eventMod.listen('pet:state', (e) => emit('pet:state', e.payload));
@@ -780,8 +809,8 @@
 
         const totalDocs = allKbs.reduce((acc, cur) => acc + (cur.documents || 0), 0);
         const sortedNames = allKbs.slice().sort((a, b) => (b.documents || 0) - (a.documents || 0)).map(k => k.name);
-        // 问答范围保留全部可访问库（含只读共享），服务端本来就按组织共享授权放行读取；
-        // 只是把口径如实报给 UI，避免出现「11 个库 vs 下拉 2 个」的困惑。
+        // cachedAskKbIds 是「全量范围」的候选池，只有用户把检索范围切到 all 时才用它；
+        // 默认范围是当前库一个。口径由 listKBs 的 scope 字段如实回报给 UI。
         cachedAskKbIds = allKbs.map(k => k.id);
         const readOnlyCount = allKbs.filter(k => k.shared && k.permission === 'viewer').length;
         const writableCount = groups.reduce((n, g) => n + g.kbs.length, 0);
@@ -791,6 +820,7 @@
           groups,
           current: cfg.kbId,
           tenantId: tid,
+          scope: cfg.askScope === 'all' ? 'all' : 'current',
           ask: {
             count: allKbs.length,
             total: allKbs.length,
@@ -812,6 +842,15 @@
       // 身份租户固定取 homeTenantId，跨租户写入由服务端按组织共享授权放行。
       saveCfg({ kbId: id, kbName: name });
       return { ok: true };
+    },
+
+    // 问答检索范围：'current' 只查当前库（默认），'all' 翻遍工作区全部可访问库。
+    // 切换立刻落盘，下一次提问就生效；只影响检索，不影响上传目标。
+    askScope: () => (loadCfg().askScope === 'all' ? 'all' : 'current'),
+    setAskScope: (scope) => {
+      const next = scope === 'all' ? 'all' : 'current';
+      saveCfg({ askScope: next });
+      return { ok: true, scope: next };
     },
 
     // 问答流
@@ -839,7 +878,13 @@
       emitLocal('chat:event', { response_type: 'agent_query' });
 
       try {
-        const poolIds = (cachedAskKbIds && cachedAskKbIds.length) ? cachedAskKbIds : (cfg.kbId ? [cfg.kbId] : []);
+        // 检索范围默认只查当前选中的库。把 11 个库（含别人的只读共享库）混在一起检索，
+        // 无关库的碎片会把榜单前几名占满，答案和引用一起变错——2026-11-16 那条
+        // 「引用到 storyboard-template.html」就是这么来的。要全量翻，得用户显式切到 all。
+        const scopeAll = cfg.askScope === 'all';
+        const poolIds = scopeAll
+          ? ((cachedAskKbIds && cachedAskKbIds.length) ? cachedAskKbIds : (cfg.kbId ? [cfg.kbId] : []))
+          : (cfg.kbId ? [cfg.kbId] : ((cachedAskKbIds && cachedAskKbIds.length) ? cachedAskKbIds : []));
         const payload = {
           query,
           knowledge_base_ids: poolIds
@@ -1158,9 +1203,7 @@
     },
     onStoreStage: (cb) => on('store:stage', cb),
 
-    openUrl: (url) => {
-      window.open(url, '_blank');
-    },
+    openUrl: (url) => openExternal(url),
 
     // 上传与队列：真实上传在 Rust 侧完成（流式读盘 + multipart + 解析轮询 + 令牌刷新），
     // 这里只负责把当前登录态连同路径交过去。队列本身也只有一份，两个窗口共用。
@@ -1239,10 +1282,7 @@
       }));
     },
 
-    openWeb: () => {
-      const cfg = loadCfg();
-      window.open(cfg.serverUrl || DEFAULT_SERVER_URL, '_blank');
-    },
+    openWeb: () => openExternal(loadCfg().serverUrl || DEFAULT_SERVER_URL),
 
     openLocalNetworkSettings: () => ({ ok: true }),
 

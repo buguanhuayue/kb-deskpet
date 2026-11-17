@@ -12,6 +12,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-set-position",
     "core:event:default",
-    "dialog:default"
+    "dialog:default",
+    "opener:default"
   ]
 }

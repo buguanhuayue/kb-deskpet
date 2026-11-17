@@ -71,7 +71,7 @@
       <section id="mainView" class="main hidden">
         <div id="chat" class="chat">
           <div class="empty" id="chatEmpty">
-            <div class="empty-title">问什么都行，我会翻遍这个工作区的知识库</div>
+            <div class="empty-title">问什么都行，我会在知识库里找依据</div>
             <div class="empty-sub">比如：差旅报销的住宿上限是多少？</div>
             <div class="empty-hint">有资料？<b>拖进窗口</b>，或点左下角「＋ 存入资料」</div>
           </div>
@@ -94,6 +94,13 @@
         </div>
 
         <footer class="composer">
+          <div id="scopeRow" class="scope-row hidden">
+            <button id="btnScope" class="scope-chip" type="button" title="切换问答检索范围">
+              <span class="scope-dot" aria-hidden="true"></span>
+              <span id="scopeLabel">仅查当前库</span>
+              <span class="scope-swap" aria-hidden="true">⇄</span>
+            </button>
+          </div>
           <div class="input-row">
             <button id="btnStore" class="plus-btn" title="存入资料到知识库（⌘⇧U）" aria-label="存入资料到知识库">
               <span class="plus-ico" aria-hidden="true">＋</span><span>存入资料</span><i id="storeHint" class="plus-dot" aria-hidden="true"></i>

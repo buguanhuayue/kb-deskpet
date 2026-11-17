@@ -16,6 +16,9 @@ const el = {
   kbWhere: $('kbWhere'),
   kbMenu: $('kbMenu'),
   kbMeta: $('kbMeta'),
+  scopeRow: $('scopeRow'),
+  btnScope: $('btnScope'),
+  scopeLabel: $('scopeLabel'),
   chat: $('chat'),
   chatEmpty: $('chatEmpty'),
   queueWrap: $('queueWrap'),
@@ -73,6 +76,9 @@ let currentTenant = 0
 let kbGroups = []
 // 问答范围 = 当前工作区全部知识库，跟 currentKB（上传目标）不是一回事
 let askScope = null
+// 实际的检索范围：'current' 只查当前库（默认），'all' 翻遍工作区所有库。
+// 由 listKBs 返回的 scope 字段同步，切换时落盘到 cfg（bridge 的 saveCfg）。
+let askScopeMode = 'current'
 let switching = false
 let busy = false
 let stream = null
@@ -395,7 +401,7 @@ $('smiDelete').addEventListener('click', async (e) => {
   if (!r.ok) return toast(r.error || '删除失败', 'warn')
   if (sessions.activeId === s.id) {
     sessions.activeId = ''
-    showChatEmpty('新对话', '问点什么？我会翻遍本工作区的知识库')
+    showChatEmpty('新对话', '问点什么？我会在知识库里找依据')
   }
   await loadSessions({ reset: true })
   toast('已删除')
@@ -464,7 +470,7 @@ function renderHistory(messages) {
     }
     const s = addAssistantStatic()
     s.text.innerHTML = mdToHtml(m.content || '（没有内容）')
-    if (m.refs && m.refs.length) renderRefs(s, m.refs)
+    if (m.refs && m.refs.length) renderRefs(s, m.refs, m.content)
   }
   scrollToBottom()
 }
@@ -484,7 +490,7 @@ async function switchSession(id, { silent = false } = {}) {
   if (!r.ok) {
     if (r.gone) {
       sessions.activeId = ''
-      showChatEmpty('新对话', '问点什么？我会翻遍本工作区的知识库')
+      showChatEmpty('新对话', '问点什么？我会在知识库里找依据')
       await loadSessions({ reset: true })
     }
     toast(r.error || '会话读取失败', 'warn')
@@ -505,7 +511,7 @@ async function newChat() {
   await window.pet.newSession()
   sessions.activeId = ''
   renderSessions()
-  showChatEmpty('新对话', '问点什么？我会翻遍本工作区的知识库')
+  showChatEmpty('新对话', '问点什么？我会在知识库里找依据')
   el.input.focus()
   closeDrawerIfNarrow()
 }
@@ -589,6 +595,7 @@ async function refreshKBs(force = false) {
   }
   kbGroups = r.groups || []
   askScope = r.ask || null
+  askScopeMode = r.scope === 'all' ? 'all' : 'current'
   const all = flatKBs()
   if (!all.length) {
     el.kbName.textContent = '没有可用知识库'
@@ -630,35 +637,61 @@ function applyKBLabel(kb) {
   el.kbName.textContent = kb.name || '未选择知识库'
   el.kbWhere.textContent = kbGroups.length > 1 ? kb.tenantName || '' : ''
   el.kbBtn.title = kb.tenantName
-    ? `上传到：${kb.tenantName} / ${kb.name}（提问不受限，会翻遍本工作区所有库）`
-    : `上传到：${kb.name}（提问不受限，会翻遍本工作区所有库）`
+    ? `上传到：${kb.tenantName} / ${kb.name}（提问默认只查这个库，输入框上方可切全量）`
+    : `上传到：${kb.name}（提问默认只查这个库，输入框上方可切全量）`
 }
 
-/** 顶部右侧：说明问答到底覆盖了几个库，别让人以为只查选中的那个 */
+/** 顶部右侧 + 输入框上方：问答到底查几个库，并给出「只查当前库 / 全量」开关 */
 function renderScope() {
   const n = (askScope && askScope.count) || 0
+  const allOn = askScopeMode === 'all'
+  const cur = flatKBs().find((k) => k.id === currentKB) || null
+  const curName = (cur && cur.name) || ''
+
   if (!n) {
     el.kbMeta.textContent = ''
+    if (el.scopeRow) el.scopeRow.classList.add('hidden')
     return
   }
   const total = (askScope && askScope.total) || n
   const readOnly = (askScope && askScope.readOnly) || 0
   const writable = (askScope && askScope.writable) || 0
+
+  // 输入框上方的开关：一句话说清这一问会翻几个库，点一下换边
+  if (el.scopeRow) {
+    el.scopeRow.classList.remove('hidden')
+    el.btnScope.classList.toggle('scope-chip--all', allOn)
+    el.scopeLabel.textContent = allOn
+      ? `检索全部 ${n} 个库`
+      : (curName ? `仅查「${curName}」` : '仅查当前库')
+    el.btnScope.title = allOn
+      ? `会同时检索 ${n} 个库：\n${(askScope.names || []).join('\n')}`
+        + `\n\n无关库多了会把答案和引用带偏，点一下改回只查当前库${curName ? `「${curName}」` : ''}`
+      : `只检索${curName ? `「${curName}」` : '当前选中的库'}这一个库`
+        + (n > 1 ? `\n\n点一下可改为检索全部 ${n} 个库（更慢，且容易混进无关文档）` : '')
+  }
+
   const base = n < total ? `回答基于 ${n}/${total} 个库` : `回答基于 ${n} 个库`
   // 检索范围和「存入知识库」下拉不是一回事：下拉只列可写库，只读共享库照样
   // 参与检索。把口径写出来，免得看起来像下拉漏了库。
-  el.kbMeta.textContent = readOnly > 0
-    ? `${base}（${writable} 个可存入 · ${readOnly} 个只读共享）`
-    : base
-  el.kbMeta.title = `会同时检索：\n${(askScope.names || []).join('\n')}` +
-    (readOnly > 0 ? `\n\n其中 ${readOnly} 个是组织共享的只读库，能检索、不能存入` : '') +
-    (n < total ? '\n（空库不参与检索）' : '')
+  el.kbMeta.textContent = allOn
+    ? (readOnly > 0
+      ? `${base}（${writable} 个可存入 · ${readOnly} 个只读共享）`
+      : base)
+    : (curName ? `仅查「${curName}」` : '仅查当前库')
+  el.kbMeta.title = allOn
+    ? `会同时检索：\n${(askScope.names || []).join('\n')}`
+      + (readOnly > 0 ? `\n\n其中 ${readOnly} 个是组织共享的只读库，能检索、不能存入` : '')
+      + (n < total ? '\n（空库不参与检索）' : '')
+    : `当前只查「${curName || '选中的库'}」\n\n想一次翻遍工作区，点输入框上方的范围开关`
+
   const sub = el.chatEmpty && el.chatEmpty.querySelector('.empty-sub')
   if (sub && !el.chatEmpty.classList.contains('hidden')) {
-    const names = (askScope.names || []).slice(0, 3).join('、')
-    const more = (askScope.names || []).length > 3 ? ' 等' : ''
-    sub.textContent = `覆盖本工作区的 ${names}${more}，共 ${n} 个库` +
-      (readOnly > 0 ? `（${readOnly} 个只读共享）` : '')
+    sub.textContent = allOn
+      ? `覆盖本工作区的 ${(askScope.names || []).slice(0, 3).join('、')}`
+        + `${(askScope.names || []).length > 3 ? ' 等' : ''}，共 ${n} 个库`
+        + (readOnly > 0 ? `（${readOnly} 个只读共享）` : '')
+      : `只在这个库里找${curName ? `：${curName}` : ''}，换成全量检索能翻遍 ${n} 个库`
   }
 }
 
@@ -781,7 +814,7 @@ async function pickKB(kb) {
     // 换空间是真换了检索范围（token 也换了），对话得重开
     resetChatSurface(
       `已切到「${kb.tenantName || '另一个空间'}」`,
-      `${kb.name} · 上传进这个库；回答改看这个空间的 ${(askScope && askScope.count) || 0} 个库`
+      `${kb.name} · 上传进这个库；提问${askScopeMode === 'all' ? `会检索这个空间的 ${(askScope && askScope.count) || 0} 个库` : '只查这个库'}`
     )
     renderScope()
     queueItems = await window.pet.listUploads()
@@ -976,7 +1009,9 @@ function addAssistant() {
   const status = document.createElement('div')
   status.className = 'status'
   const n = (askScope && askScope.count) || 0
-  status.textContent = n > 1 ? `正在检索 ${n} 个知识库…` : '正在检索知识库…'
+  status.textContent = (askScopeMode === 'all' && n > 1)
+    ? `正在检索 ${n} 个知识库…`
+    : '正在检索知识库…'
   const text = document.createElement('span')
   b.appendChild(status)
   b.appendChild(text)
@@ -1073,7 +1108,65 @@ function fillRefThumb(thumb, img) {
   }).catch(() => thumb.classList.add('broken'))
 }
 
-function renderRefs(s, refs) {
+/* 答案正文里的 [n] 标号 → refs 下标集合。
+ * 标号是模型按提示词里的片段顺序打的，而片段顺序就是 refData 的顺序，
+ * 所以 [n] 直接对应 refData[n-1]，不需要别的映射。 */
+function citedRefIndexes(text, total) {
+  const set = new Set()
+  const re = /\[(\d{1,2})\]/g
+  let m
+  while ((m = re.exec(String(text || ''))) !== null) {
+    const k = Number(m[1])
+    if (k >= 1 && k <= total) set.add(k - 1)
+  }
+  return set
+}
+
+/* 该摆哪几条引用：
+ * 1) 答案标了 [n] —— 只摆被点名的，按标号顺序（和正文对得上）；
+ * 2) 没标号 —— 按「文档」去重取前 6 个。旧版直接摊 refData 前 6 条，
+ *    多库混检时那 6 条经常全是不相干文档的碎片，看起来就是「引用全错」。 */
+function pickShownRefs(refs, answerText) {
+  const cited = citedRefIndexes(answerText, refs.length)
+  if (cited.size) return Array.from(cited).sort((a, b) => a - b)
+  const seen = new Set()
+  const out = []
+  for (let i = 0; i < refs.length && out.length < 6; i++) {
+    const key = refs[i].knowledge_id || refs[i].knowledge_title || ('#' + i)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(i)
+  }
+  return out
+}
+
+function makeRefChip(s, i, r) {
+  const chip = document.createElement('button')
+  chip.className = 'ref-chip'
+  const img = resolveRefImage(r, s.refData)
+  if (img) {
+    chip.classList.add('ref-chip--img')
+    chip.title = img.title || '点开看图'
+    const thumb = document.createElement('span')
+    thumb.className = 'ref-thumb'
+    thumb.__refImg = img
+    thumb.appendChild(Object.assign(document.createElement('span'), { className: 'ref-thumb-ph' }))
+    const label = document.createElement('span')
+    label.className = 'ref-chip-label'
+    label.textContent = `[${i + 1}] ${img.title || '图片'}`
+    chip.appendChild(thumb)
+    chip.appendChild(label)
+    getRefThumbObserver().observe(thumb)
+  } else {
+    chip.textContent = `[${i + 1}] ${r.knowledge_title || '片段'}`
+    chip.title = '点开看原文'
+  }
+  // 标号始终是「原始下标 + 1」，这样 chip 上的 [n] 和正文里的 [n] 是同一个东西
+  chip.addEventListener('click', () => toggleRefBody(s, i))
+  return chip
+}
+
+function renderRefs(s, refs, answerText) {
   s.refData = refs || []
   s.refs.innerHTML = ''
   // 引用正文是 refs 的兄弟节点，innerHTML 清不掉，必须显式摘掉
@@ -1081,30 +1174,38 @@ function renderRefs(s, refs) {
     s.refBody.remove()
     s.refBody = null
   }
-  s.refData.slice(0, 6).forEach((r, i) => {
-    const chip = document.createElement('button')
-    chip.className = 'ref-chip'
-    const img = resolveRefImage(r, s.refData)
-    if (img) {
-      chip.classList.add('ref-chip--img')
-      chip.title = img.title || '点开看图'
-      const thumb = document.createElement('span')
-      thumb.className = 'ref-thumb'
-      thumb.__refImg = img
-      thumb.appendChild(Object.assign(document.createElement('span'), { className: 'ref-thumb-ph' }))
-      const label = document.createElement('span')
-      label.className = 'ref-chip-label'
-      label.textContent = `[${i + 1}] ${img.title || '图片'}`
-      chip.appendChild(thumb)
-      chip.appendChild(label)
-      getRefThumbObserver().observe(thumb)
-    } else {
-      chip.textContent = `[${i + 1}] ${r.knowledge_title || '片段'}`
-      chip.title = '点开看原文'
+  const all = s.refData
+  if (!all.length) return
+
+  const text = answerText != null ? answerText : (s.raw || s.text.textContent || '')
+  const shown = pickShownRefs(all, text)
+  const shownSet = new Set(shown)
+  shown.forEach((i) => s.refs.appendChild(makeRefChip(s, i, all[i])))
+
+  // 没被答案用到的召回片段折叠起来：它们的价值只在「想自己翻翻」时，
+  // 平时摆在最显眼处只会让人以为引用错了。
+  const rest = all.map((_, i) => i).filter((i) => !shownSet.has(i))
+  if (!rest.length) return
+  const more = document.createElement('button')
+  more.className = 'ref-chip ref-chip--rest'
+  more.textContent = `其他召回 ${rest.length} 段`
+  more.title = '这些片段没被答案用到，多半和问题关系不大；点开可自行核对'
+  more.addEventListener('click', () => {
+    if (more.dataset.on === '1') {
+      s.refs.querySelectorAll('.ref-chip--extra').forEach((n) => n.remove())
+      more.dataset.on = '0'
+      more.textContent = `其他召回 ${rest.length} 段`
+      return
     }
-    chip.addEventListener('click', () => toggleRefBody(s, i))
-    s.refs.appendChild(chip)
+    more.dataset.on = '1'
+    more.textContent = `收起其他 ${rest.length} 段`
+    rest.forEach((i) => {
+      const c = makeRefChip(s, i, all[i])
+      c.classList.add('ref-chip--extra')
+      s.refs.appendChild(c)
+    })
   })
+  s.refs.appendChild(more)
 }
 
 function toggleRefBody(s, i) {
@@ -1450,7 +1551,7 @@ async function send() {
     s.wrap.remove()
     renderRefusal(query, r.kbCount)
   } else if (r.references && r.references.length) {
-    renderRefs(s, r.references)
+    renderRefs(s, r.references, s.raw || '')
   }
   if (r.ok && !r.refused) {
     // 附件只用一次：答完就撤掉，别让下一条问题带着它
@@ -1483,9 +1584,32 @@ function finishStream(s) {
   if (!s.text.textContent.trim()) {
     s.text.textContent = '（没有返回内容）'
   }
+  // 正文收齐后按 [n] 标号重排引用：流式开始时没有正文，摆出来的只是召回顺序，
+  // 那正是「引用看起来全错」的来源之一。
+  if (s.refData && s.refData.length) {
+    renderRefs(s, s.refData, s.raw || s.text.textContent || '')
+  }
 }
 
 el.btnSend.addEventListener('click', send)
+
+// 检索范围开关：只改检索，不动上传目标。切换后下一问立刻生效。
+if (el.btnScope) {
+  el.btnScope.addEventListener('click', async () => {
+    if (busy) {
+      toast('正在回答，答完再切范围')
+      return
+    }
+    const next = askScopeMode === 'all' ? 'current' : 'all'
+    const r = await window.pet.setAskScope(next)
+    askScopeMode = (r && r.scope) === 'all' ? 'all' : 'current'
+    renderScope()
+    toast(askScopeMode === 'all'
+      ? '改为检索工作区全部知识库（更慢，可能混进无关文档）'
+      : '改为只检索当前知识库')
+  })
+}
+
 
 el.input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -2296,7 +2420,9 @@ window.pet.onChatEvent((ev) => {
   } else if (t === 'tool_call') {
     if (s.status) s.status.textContent = '正在检索知识库…'
   } else if (t === 'references') {
-    renderRefs(s, ev.knowledge_references || [])
+    // references 事件先于正文到达，此刻答案还是空的，只能先按召回顺序摆；
+    // 等 complete 时会用完整正文重排一次（见 finishStream）
+    renderRefs(s, ev.knowledge_references || [], s.raw || '')
   } else if (t === 'answer') {
     if (s.status) {
       s.status.remove()

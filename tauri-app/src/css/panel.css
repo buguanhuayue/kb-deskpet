@@ -428,6 +428,16 @@ html, body {
   white-space: nowrap;
 }
 .ref-chip:hover { border-color: var(--accent); color: var(--accent); }
+/* 未被答案引用的召回片段：折叠入口 + 展开后的灰态 */
+.ref-chip--rest {
+  border-style: dashed;
+  color: var(--ink-3);
+  background: transparent;
+}
+.ref-chip--extra {
+  opacity: .62;
+  font-size: 10px;
+}
 .ref-body {
   border-left: 2px solid var(--accent-soft);
   padding: 6px 10px;
@@ -534,6 +544,49 @@ html, body {
   padding: 8px 12px 12px;
   background: var(--bg);
 }
+
+/* 检索范围开关：贴在输入框上方。默认「仅查当前库」，点一下切到全量。
+   放在这里而不是标题栏，是因为它直接决定这一问翻几个库，得贴着输入框才有存在感。 */
+.scope-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 6px;
+}
+.scope-row.hidden { display: none; }
+.scope-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.scope-chip:hover { border-color: var(--accent); color: var(--accent); }
+.scope-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.scope-swap { flex: 0 0 auto; font-size: 10px; opacity: .55; }
+/* 全量检索是有代价的（慢、容易混进无关文档），用醒目一点的颜色提醒 */
+.scope-chip--all {
+  border-color: #f0c36d;
+  background: #fdf6e6;
+  color: #8a6100;
+}
+.scope-chip--all .scope-dot { background: #d99a1a; }
 .sd-src { display: flex; gap: 6px; justify-content: center; margin-top: 10px; }
 .tool {
   border: 1px solid var(--line);

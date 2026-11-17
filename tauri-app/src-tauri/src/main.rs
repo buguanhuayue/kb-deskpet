@@ -118,6 +118,7 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::default().build())
         // 「选文件 / 选文件夹」用系统对话框：webview 的 input[type=file] 拿不到绝对路径
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(upload::UploadState::new())
         .manage(update::UpdateCache::default())
         .invoke_handler(tauri::generate_handler![
