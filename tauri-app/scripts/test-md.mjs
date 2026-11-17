@@ -20,6 +20,7 @@ import vm from 'node:vm'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const MD_PATH = join(ROOT, 'src/public/js/md.js')
 const CHUNKS_PATH = join(ROOT, 'src/public/js/chunks.js')
+const REFS_PATH = join(ROOT, 'src/public/js/refs.js')
 const BRIDGE_PATH = join(ROOT, 'src/public/js/tauri-bridge.js')
 
 /** md.js 是 UMD 风格：在沙箱里给它一个 window 和 module，取回 API */
@@ -35,6 +36,14 @@ function loadChunks() {
   const sandbox = { window: {}, module: { exports: {} } }
   vm.createContext(sandbox)
   vm.runInContext(readFileSync(CHUNKS_PATH, 'utf8'), sandbox, { filename: CHUNKS_PATH })
+  return sandbox.module.exports
+}
+
+/** refs.js：引用筛选，纯函数 */
+function loadRefs() {
+  const sandbox = { window: {}, module: { exports: {} } }
+  vm.createContext(sandbox)
+  vm.runInContext(readFileSync(REFS_PATH, 'utf8'), sandbox, { filename: REFS_PATH })
   return sandbox.module.exports
 }
 
@@ -201,6 +210,57 @@ check('短巧合前缀不被当成重叠', () => {
     { chunk_index: 1, content: '| a | b | c | 后面还有很长一段正文内容' }
   ])
   assert(text.includes('| a | b | c |'), text)
+})
+
+console.log('引用筛选（无关引用不该被摆出来）')
+const refsLib = loadRefs()
+const TARGET = '02_机房建设方案_V4定稿.md'
+const junk = (title, id) => ({ knowledge_id: id, knowledge_title: title, content: '# 短剧分镜模板\n| 镜头 | 时长 | 备注 |\n|---|---|---|\n| 1 | 3s | 开场空镜 |\n模板正文讲分镜表格怎么填。' })
+const junkRefs = [
+  junk('SKILL_副本(1).md', 'kb-junk'),
+  junk('SKILL_副本(1).md', 'kb-junk'),
+  junk('prototype-v70-pc-merged(1).html', 'kb-proto'),
+  junk('storyboard-template(1).md', 'kb-story')
+]
+const targetHi = {
+  knowledge_id: 'kb-target',
+  knowledge_title: TARGET,
+  content: '**关键数字**：总功耗 **6,279 W** · 冷负荷 6,630 W · UPS **模块化 60kVA 框架**，验收需书面放电测试。'
+}
+const targetLo = {
+  knowledge_id: 'kb-target',
+  knowledge_title: TARGET,
+  content: '## 1 现有设备\n\n### 1.1 集团办公网（9 台 / 611 W）\n\n| 类型 | 型号 | 数量 | 功耗 |'
+}
+const ANSWER =
+  '根据《02_机房建设方案_V4定稿.md》，总功耗 6,279 W，冷负荷 6,630 W，UPS 用模块化 60kVA 框架，验收要书面放电测试。'
+check('无标号时按答案覆盖率挑，无关文档全部折叠', () => {
+  // 无关文档排在最前面（正是旧逻辑会取中的位置），且分数更高
+  const list = [...junkRefs, targetLo, targetHi]
+  const shown = refsLib.pickShownRefs(list, ANSWER)
+  assert(shown.length === 1, `应只摆 1 篇文档，实际 ${JSON.stringify(shown)}`)
+  assert(shown[0] === 5, `应挑覆盖率最高的那段（下标 5），实际 ${shown[0]}`)
+})
+check('有标号时只摆被点名的（老行为不变）', () => {
+  const list = [...junkRefs, targetHi]
+  const shown = refsLib.pickShownRefs(list, '见 [1] 与 [5]，另 [9] 越界')
+  assert(JSON.stringify(shown) === '[0,4]', `实际 ${JSON.stringify(shown)}`)
+})
+check('正文还没到（流式开头）不猜引用', () => {
+  assert(refsLib.pickShownRefs([...junkRefs, targetHi], '').length === 0, '空正文不应返回引用')
+})
+check('一条都匹配不上时返回空，交给 UI 折叠', () => {
+  const shown = refsLib.pickShownRefs(junkRefs, '这次回答跟知识库内容完全无关，只是闲聊。')
+  assert(shown.length === 0, `实际 ${JSON.stringify(shown)}`)
+})
+check('答案里点过名的文档，覆盖率低也保留', () => {
+  const odd = { knowledge_id: 'kb-x', knowledge_title: TARGET, content: '完全不同的内容，一句话。' }
+  const shown = refsLib.pickShownRefs([junkRefs[0], odd], `关于${TARGET}的说明见上。`)
+  assert(JSON.stringify(shown) === '[1]', `实际 ${JSON.stringify(shown)}`)
+})
+check('同一篇文档只摆它覆盖率最高的那一段', () => {
+  const shown = refsLib.pickShownRefs([targetLo, targetHi, targetLo], ANSWER)
+  assert(shown.length === 1 && shown[0] === 1, `实际 ${JSON.stringify(shown)}`)
 })
 
 if (failed) {

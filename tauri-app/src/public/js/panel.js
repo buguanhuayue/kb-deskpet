@@ -1108,41 +1108,16 @@ function fillRefThumb(thumb, img) {
   }).catch(() => thumb.classList.add('broken'))
 }
 
-/* 答案正文里的 [n] 标号 → refs 下标集合。
- * 标号是模型按提示词里的片段顺序打的，而片段顺序就是 refData 的顺序，
- * 所以 [n] 直接对应 refData[n-1]，不需要别的映射。 */
-function citedRefIndexes(text, total) {
-  const set = new Set()
-  const re = /\[(\d{1,2})\]/g
-  let m
-  while ((m = re.exec(String(text || ''))) !== null) {
-    const k = Number(m[1])
-    if (k >= 1 && k <= total) set.add(k - 1)
-  }
-  return set
-}
-
-/* 该摆哪几条引用：
- * 1) 答案标了 [n] —— 只摆被点名的，按标号顺序（和正文对得上）；
- * 2) 没标号 —— 按「文档」去重取前 6 个。旧版直接摊 refData 前 6 条，
- *    多库混检时那 6 条经常全是不相干文档的碎片，看起来就是「引用全错」。 */
-function pickShownRefs(refs, answerText) {
-  const cited = citedRefIndexes(answerText, refs.length)
-  if (cited.size) return Array.from(cited).sort((a, b) => a - b)
-  const seen = new Set()
-  const out = []
-  for (let i = 0; i < refs.length && out.length < 6; i++) {
-    const key = refs[i].knowledge_id || refs[i].knowledge_title || ('#' + i)
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push(i)
-  }
-  return out
-}
+/* 引用筛选逻辑搬到 refs.js（纯函数，可在 Node 里跑回归）：
+ * 答案有 [n] 标号就只摆被点名的；没有标号则按「答案覆盖率」挑文档，
+ * 不再按召回顺序——2026-11-17 那次「引用全错」就是按召回顺序摆造成的。 */
 
 function makeRefChip(s, i, r) {
   const chip = document.createElement('button')
   chip.className = 'ref-chip'
+  // 有标号时 chip 上的 [n] 必须和正文里的 [n] 对齐；没标号时编号毫无意义，
+  // 反而让人以为「[8] 是正文第 8 条引用」，所以干脆不写。
+  const prefix = s.refNumbered ? `[${i + 1}] ` : ''
   const img = resolveRefImage(r, s.refData)
   if (img) {
     chip.classList.add('ref-chip--img')
@@ -1153,15 +1128,14 @@ function makeRefChip(s, i, r) {
     thumb.appendChild(Object.assign(document.createElement('span'), { className: 'ref-thumb-ph' }))
     const label = document.createElement('span')
     label.className = 'ref-chip-label'
-    label.textContent = `[${i + 1}] ${img.title || '图片'}`
+    label.textContent = `${prefix}${img.title || '图片'}`
     chip.appendChild(thumb)
     chip.appendChild(label)
     getRefThumbObserver().observe(thumb)
   } else {
-    chip.textContent = `[${i + 1}] ${r.knowledge_title || '片段'}`
+    chip.textContent = `${prefix}${r.knowledge_title || '片段'}`
     chip.title = '点开看原文'
   }
-  // 标号始终是「原始下标 + 1」，这样 chip 上的 [n] 和正文里的 [n] 是同一个东西
   chip.addEventListener('click', () => toggleRefBody(s, i))
   return chip
 }
@@ -1178,7 +1152,11 @@ function renderRefs(s, refs, answerText) {
   if (!all.length) return
 
   const text = answerText != null ? answerText : (s.raw || s.text.textContent || '')
+  const cited = citedRefIndexes(text, all.length)
+  s.refNumbered = cited.size > 0
   const shown = pickShownRefs(all, text)
+  // 流式开头正文还没到，算不出覆盖率；这时候摆什么都是猜，等收尾重排
+  if (!shown.length && !String(text).trim()) return
   const shownSet = new Set(shown)
   shown.forEach((i) => s.refs.appendChild(makeRefChip(s, i, all[i])))
 
@@ -1186,19 +1164,25 @@ function renderRefs(s, refs, answerText) {
   // 平时摆在最显眼处只会让人以为引用错了。
   const rest = all.map((_, i) => i).filter((i) => !shownSet.has(i))
   if (!rest.length) return
+  const label = (on) => {
+    if (!shown.length) return on ? `收起 ${rest.length} 段` : `召回 ${rest.length} 段，均未匹配到答案`
+    return on ? `收起其他 ${rest.length} 段` : `其他召回 ${rest.length} 段`
+  }
   const more = document.createElement('button')
   more.className = 'ref-chip ref-chip--rest'
-  more.textContent = `其他召回 ${rest.length} 段`
-  more.title = '这些片段没被答案用到，多半和问题关系不大；点开可自行核对'
+  more.textContent = label(false)
+  more.title = shown.length
+    ? '这些片段和答案正文基本没有重合，多半是检索噪声；点开可自行核对'
+    : '这次召回的片段都没有出现在答案里（模型可能没用材料，或材料与问题不匹配）；点开可自行核对'
   more.addEventListener('click', () => {
     if (more.dataset.on === '1') {
       s.refs.querySelectorAll('.ref-chip--extra').forEach((n) => n.remove())
       more.dataset.on = '0'
-      more.textContent = `其他召回 ${rest.length} 段`
+      more.textContent = label(false)
       return
     }
     more.dataset.on = '1'
-    more.textContent = `收起其他 ${rest.length} 段`
+    more.textContent = label(true)
     rest.forEach((i) => {
       const c = makeRefChip(s, i, all[i])
       c.classList.add('ref-chip--extra')
@@ -1609,6 +1593,7 @@ function renderRefusal(query, kbCount) {
 /* Markdown 渲染搬到了 md.js（纯函数，Node 里可 require 做回归测试）：
  * 先整篇转义（含引号）再拼标签，链接只放行 http/https。 */
 const { mdToHtml } = window.md
+const { pickShownRefs, citedRefIndexes } = window.refs
 
 function addLowConfidence(s) {
   if (s.lowConf) return
