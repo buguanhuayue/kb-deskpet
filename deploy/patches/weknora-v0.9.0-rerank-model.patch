@@ -1,0 +1,80 @@
+--- /home/demo/build/backup/session_knowledge_qa.go	2026-10-29 14:57:29.000000000 +0800
++++ internal/application/service/session_knowledge_qa.go	2026-11-17 10:45:46.062354513 +0800
+@@ -139,6 +139,7 @@
+ 			EmbeddingTopK:           s.cfg.Conversation.EmbeddingTopK,
+ 			RerankTopK:              s.cfg.Conversation.RerankTopK,
+ 			RerankThreshold:         s.cfg.Conversation.RerankThreshold,
++			RerankModelID:           s.resolveRerankModelIDForQA(ctx, req),
+ 			ChatModelID:             chatModelID,
+ 			ChatModelTenantID:       chatModelTenantID,
+ 			SummaryConfig:           summaryConfig,
+--- /home/demo/build/backup/session_qa_helpers.go	2026-10-29 14:57:29.000000000 +0800
++++ internal/application/service/session_qa_helpers.go	2026-11-17 10:45:46.062354513 +0800
+@@ -393,3 +393,37 @@
+ 
+ 	return filteredKBs, filteredKnowledge
+ }
++
++// resolveRerankModelIDForQA 为普通知识问答挑一个重排模型。
++//
++// 这条链路原先从不设置 RerankModelID，rerank 阶段于是每次都
++// skip("empty_model_id")，引用顺序完全由向量原始分决定——2026-11-17 排查
++// 「引用全错」时，日志里 39 次请求全是这个 skip。检索 API
++// （HybridSearchWithRerank）和 agent 链路都会解析重排模型，只有最常用的
++// 问答入口漏了。
++//
++// 顺序：agent 自己配的 > 租户 RetrievalConfig > 工作区内置/默认 rerank 模型。
++// 都没有就返回空串，pipeline 退回检索顺序，与修复前行为一致，不会因为
++// 少了模型而报错。
++func (s *sessionService) resolveRerankModelIDForQA(ctx context.Context, req *types.QARequest) string {
++	if req != nil && req.CustomAgent != nil {
++		if id := strings.TrimSpace(req.CustomAgent.Config.RerankModelID); id != "" {
++			return id
++		}
++	}
++	var rc *types.RetrievalConfig
++	if info, ok := types.TenantInfoFromContext(ctx); ok && info != nil {
++		rc = info.RetrievalConfig
++	}
++	modelID, source, err := resolveRerankModelID(ctx, s.modelService, "", rc)
++	if err != nil {
++		logger.Warnf(ctx, "Resolve rerank model for knowledge QA failed: %v", err)
++		return ""
++	}
++	if modelID == "" {
++		logger.Infof(ctx, "No rerank model in this workspace, knowledge QA keeps retrieval order")
++		return ""
++	}
++	logger.Infof(ctx, "Knowledge QA rerank model: %s (source=%s)", modelID, source)
++	return modelID
++}
+--- /home/demo/build/backup/rerank.go	2026-10-29 14:57:29.000000000 +0800
++++ internal/application/service/chat_pipeline/rerank.go	2026-11-17 10:45:46.063354517 +0800
+@@ -109,7 +109,7 @@
+ 	opts := reranking.Options{
+ 		Threshold:        chatManage.RerankThreshold,
+ 		TopK:             max(1, chatManage.RerankTopK),
+-		MaxCandidates:    max(reranking.DefaultMaxCandidates, chatManage.RerankTopK),
++		MaxCandidates:    max(chatManage.RerankTopK, reranking.LocalMaxCandidates),
+ 		FallbackMinScore: reranking.FallbackMinScore(chatManage.SearchTargets.HasRecallThresholdOverride()),
+ 		ImageKeepScore:   reranking.ImageKeepScoreFor(chatManage.VectorThreshold),
+ 	}
+--- /home/demo/build/backup/rerank_pkg.go	2026-10-29 14:57:29.000000000 +0800
++++ internal/reranking/rerank.go	2026-11-17 10:47:07.870696088 +0800
+@@ -37,6 +37,16 @@
+ 	// per-document or per-tag targets each add a full retrieval list, and
+ 	// every candidate is a billed passage and a share of the latency.
+ 	DefaultMaxCandidates = 200
++
++	// LocalMaxCandidates caps the rerank pool when the model runs as a local
++	// CPU service rather than a hosted API. DefaultMaxCandidates assumes a
++	// batched remote reranker where every candidate is just billed latency;
++	// the fastembed/ONNX cross-encoder in this deployment is single-flight at
++	// roughly 210ms per pair, so 200 candidates cost ~45s per turn. 60
++	// candidates cost ~13s and still cover the answer: measured on
++	// 2026-11-17, the document the answer was drawn from ranked 8th by raw
++	// vector score.
++	LocalMaxCandidates = 60
+ )
+ 
+ // FallbackMinScore returns the score the best candidate needs to survive an
