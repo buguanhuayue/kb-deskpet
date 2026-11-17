@@ -1158,6 +1158,39 @@
       return (await invoke('upload_forget', { id })) || { ok: true };
     },
 
+    // 整篇原文：按 /chunks/{knowledge_id} 分页拉回，交给 chunks.js 拼接。
+    // 不能走 /knowledge/{id}/download —— 只读共享库（viewer）下它必返 403
+    // 「Permission denied to access this knowledge base」，这是服务端的设计，
+    // 但 /chunks 对 viewer 是放行的（平台网页端的文档详情也这么读）。
+    knowledgeText: async (knowledgeId) => {
+      if (!knowledgeId) return { ok: false, error: '缺少文档 id' };
+      try {
+        const rows = [];
+        let total = Infinity;
+        for (let page = 1; page <= 30; page++) {
+          const res = await apiRequest(
+            `/chunks/${encodeURIComponent(knowledgeId)}?page=${page}&page_size=100`,
+            { headers: kbHeaders() }
+          );
+          const batch = (res && (res.data || res.items)) || [];
+          if (!batch.length) break;
+          rows.push(...batch);
+          const t = Number(res && (res.total != null ? res.total : res.total_count));
+          if (Number.isFinite(t) && t > 0) total = t;
+          if (rows.length >= total) break;
+        }
+        if (!rows.length) return { ok: false, error: '这个文档没有可读的切片' };
+        const stitcher = window.chunks;
+        const merged = stitcher
+          ? stitcher.stitchChunks(rows)
+          : { text: rows.map((r) => r.content || '').join('\n'), chunks: rows.length, chars: 0 };
+        if (!merged.chars) merged.chars = merged.text.length;
+        return { ok: true, text: merged.text, chunks: merged.chunks, chars: merged.chars, fetched: rows.length };
+      } catch (e) {
+        return { ok: false, error: e.message, status: e && e.status, code: e && e.code };
+      }
+    },
+
     uploadText: async ({ title, content }) => {
       const cfg = loadCfg();
       if (!cfg.kbId) return { ok: false, error: '未选择知识库' };

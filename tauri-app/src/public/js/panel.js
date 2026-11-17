@@ -1268,9 +1268,116 @@ function toggleRefBody(s, i) {
   } else {
     // 片段原文同样走 Markdown 渲染（mdToHtml 先转义，安全）；在 .bubble-a 内，样式复用
     body.innerHTML = mdToHtml((r.content || '').slice(0, 1200))
+    // 这里只显示前 1200 字，问到「把完整正文给我」时远远不够。
+    // 给一条通往整篇的入口，别再让模型去复述 8 万字的文档。
+    const bar = document.createElement('div')
+    bar.className = 'ref-actions'
+    const openBtn = document.createElement('button')
+    openBtn.className = 'ref-open-doc'
+    openBtn.textContent = '查看完整原文'
+    openBtn.title = '按切片拼回整篇（只读共享库也能读，不需要下载权限）'
+    openBtn.addEventListener('click', () =>
+      openDocReader({
+        id: r.knowledge_id,
+        kbId: r.knowledge_base_id || '',
+        title: r.knowledge_title || r.knowledge_filename || '文档原文'
+      })
+    )
+    bar.appendChild(openBtn)
+    body.appendChild(bar)
   }
   s.refs.after(body)
   s.refBody = body
+}
+
+/* ---------------- 全文阅读器 ----------------
+ * 引用片段只有 1200 字，「完整的 xx 文档」这类需求必须看整篇。
+ * 数据源是 /chunks/{knowledge_id} 分页（见 bridge.knowledgeText），
+ * 拼好的文本按文档 id 缓存在内存里，同一篇反复点开不再请求。 */
+const docCache = new Map()
+let docReader = null
+
+function ensureDocReader() {
+  if (docReader) return docReader
+  const root = document.createElement('div')
+  root.className = 'doc-overlay hidden'
+
+  const sheet = document.createElement('div')
+  sheet.className = 'doc-sheet'
+
+  const head = document.createElement('div')
+  head.className = 'doc-head'
+  const titles = document.createElement('div')
+  titles.className = 'doc-titles'
+  const title = document.createElement('div')
+  title.className = 'doc-title'
+  const meta = document.createElement('div')
+  meta.className = 'doc-meta'
+  titles.appendChild(title)
+  titles.appendChild(meta)
+
+  const close = document.createElement('button')
+  close.className = 'doc-close'
+  close.textContent = '×'
+  close.title = '关闭 (Esc)'
+  close.addEventListener('click', closeDocReader)
+
+  head.appendChild(titles)
+  head.appendChild(close)
+
+  const body = document.createElement('div')
+  body.className = 'doc-body'
+
+  sheet.appendChild(head)
+  sheet.appendChild(body)
+  root.appendChild(sheet)
+  // 点遮罩空白处关闭（点正文不关，否则想选字时容易误关）
+  root.addEventListener('click', (e) => { if (e.target === root) closeDocReader() })
+
+  document.body.appendChild(root)
+  docReader = { root, title, meta, body, keyHandler: null }
+  return docReader
+}
+
+function closeDocReader() {
+  if (!docReader) return
+  docReader.root.classList.add('hidden')
+  docReader.body.innerHTML = ''
+  if (docReader.keyHandler) {
+    document.removeEventListener('keydown', docReader.keyHandler)
+    docReader.keyHandler = null
+  }
+}
+
+async function openDocReader({ id, title }) {
+  const d = ensureDocReader()
+  d.root.classList.remove('hidden')
+  d.title.textContent = title || '文档原文'
+  d.meta.textContent = '正在读取全文…'
+  d.body.innerHTML = ''
+  d.body.scrollTop = 0
+  if (d.keyHandler) document.removeEventListener('keydown', d.keyHandler)
+  d.keyHandler = (e) => { if (e.key === 'Escape') closeDocReader() }
+  document.addEventListener('keydown', d.keyHandler)
+
+  let got = docCache.get(id)
+  if (!got) {
+    const res = await window.pet.knowledgeText(id)
+    if (!d.root.isConnected || d.root.classList.contains('hidden')) return
+    if (!res || !res.ok) {
+      d.meta.textContent = ''
+      const err = document.createElement('div')
+      err.className = 'doc-error'
+      // 403 多半是权限（别人共享的库被收回了），把状态码露出来好排查
+      err.textContent = `读不到这个文档：${(res && res.error) || '未知错误'}${res && res.status ? `（HTTP ${res.status}）` : ''}`
+      d.body.appendChild(err)
+      return
+    }
+    got = res
+    docCache.set(id, got)
+  }
+  d.meta.textContent = `全文 ${got.chars.toLocaleString()} 字 · 由 ${got.chunks} 个切片拼回`
+  d.body.innerHTML = mdToHtml(got.text)
 }
 
 /* ---------------- 引用图片灯箱 ----------------

@@ -451,6 +451,73 @@ html, body {
   user-select: text;
 }
 
+/* 引用片段底部的「查看完整原文」入口，粘在滚动区底部，片段长也点得到 */
+.ref-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 6px;
+  position: sticky;
+  bottom: -6px;
+  background: #fff;
+}
+.ref-open-doc {
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ref-open-doc:hover { background: var(--accent); color: #fff; }
+
+/* 全文阅读器：盖住整个面板，标题固定在顶部，正文自己滚 */
+.doc-overlay { position: fixed; inset: 0; z-index: 900; background: var(--bg); display: flex; }
+.doc-overlay.hidden { display: none; }
+.doc-sheet { display: flex; flex-direction: column; width: 100%; height: 100%; }
+.doc-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-soft);
+}
+.doc-titles { flex: 1; min-width: 0; }
+.doc-title { font-size: 13px; font-weight: 600; color: var(--ink); word-break: break-all; }
+.doc-meta { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+.doc-close {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink-2);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.doc-close:hover { border-color: var(--accent); color: var(--accent); }
+.doc-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 14px 40px;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--ink);
+  user-select: text;
+  white-space: normal;
+}
+.doc-body .md-table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 11.5px; }
+.doc-body .md-table th,
+.doc-body .md-table td { border: 1px solid var(--line); padding: 4px 6px; text-align: left; }
+.doc-body .md-table th { background: var(--bg-soft); font-weight: 600; }
+.doc-body .md-h2 { font-size: 14px; font-weight: 600; margin: 16px 0 6px; }
+.doc-body .md-h3 { font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
+.doc-error { color: var(--danger); font-size: 12px; }
+
 .lowconf {
   margin-top: 8px;
   font-size: 11.5px;

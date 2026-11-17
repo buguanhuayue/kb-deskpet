@@ -19,6 +19,7 @@ import vm from 'node:vm'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const MD_PATH = join(ROOT, 'src/public/js/md.js')
+const CHUNKS_PATH = join(ROOT, 'src/public/js/chunks.js')
 const BRIDGE_PATH = join(ROOT, 'src/public/js/tauri-bridge.js')
 
 /** md.js 是 UMD 风格：在沙箱里给它一个 window 和 module，取回 API */
@@ -26,6 +27,14 @@ function loadMd() {
   const sandbox = { window: {}, module: { exports: {} } }
   vm.createContext(sandbox)
   vm.runInContext(readFileSync(MD_PATH, 'utf8'), sandbox, { filename: MD_PATH })
+  return sandbox.module.exports
+}
+
+/** chunks.js 同样是 UMD：切片拼接逻辑，不依赖 DOM */
+function loadChunks() {
+  const sandbox = { window: {}, module: { exports: {} } }
+  vm.createContext(sandbox)
+  vm.runInContext(readFileSync(CHUNKS_PATH, 'utf8'), sandbox, { filename: CHUNKS_PATH })
   return sandbox.module.exports
 }
 
@@ -152,6 +161,46 @@ check('bridge 里 chat:event 只用 emitLocal', () => {
   assert(bad.length === 0, `仍有 ${bad.length} 处 chat:event 走 broadcast（会被 Rust 广播回本窗口，导致分片重复）`)
   assert(/emitLocal\('chat:event'/.test(src), '没有找到 emitLocal 派发的 chat:event')
   assert(/invoke\('emit_event', \{ event: evt, payload, origin: SELF_LABEL \}\)/.test(src), 'broadcast 没有带上 origin，Rust 侧无法跳过发送方窗口')
+})
+
+console.log('切片拼接（「查看完整原文」的数据层）')
+const chunks = loadChunks()
+check('跨片重叠只保留一份', () => {
+  const ov1 = '这是两片之间的重叠文字共十六个字呀'
+  const ov2 = '第二段的开头又和上一片尾巴重合一段'
+  const { text } = chunks.stitchChunks([
+    { chunk_index: 1, content: ov1 + '第二段接着说。' + ov2 },
+    { chunk_index: 0, content: '开头第一段。' + ov1 },
+    { chunk_index: 2, content: ov2 + '收尾。' }
+  ])
+  // 乱序入参也要按 chunk_index 拼：0 → 1 → 2
+  assert(text.startsWith('开头第一段'), text)
+  assert((text.match(new RegExp(ov1, 'g')) || []).length === 1, `第一处重叠被重复拼接：${text}`)
+  assert((text.match(new RegExp(ov2, 'g')) || []).length === 1, `第二处重叠被重复拼接：${text}`)
+  assert(text.includes('收尾'), text)
+})
+check('同一张表跨片重复的表头会去掉，新表保留', () => {
+  const { text } = chunks.stitchChunks([
+    { chunk_index: 0, content: '| 柜 | 功耗 |\n|---|---|\n| A | 10 |\n' },
+    { chunk_index: 1, content: '| 柜 | 功耗 |\n|---|---|\n| B | 20 |\n' },
+    // 空行之后是另一张表，表头必须留着
+    { chunk_index: 2, content: '\n另一张表：\n\n| 名称 | 数量 |\n|---|---|\n| x | 1 |\n' }
+  ])
+  assert((text.match(/\| 柜 \| 功耗 \|/g) || []).length === 1, `续片表头没去掉：\n${text}`)
+  assert(text.includes('| 名称 | 数量 |'), '新表的表头被误删了')
+  assert(text.includes('| B | 20 |'), '续片数据行丢了')
+})
+check('空切片与脏数据不炸', () => {
+  assert(chunks.stitchChunks([]).text === '', '空数组应返回空文本')
+  const r = chunks.stitchChunks([null, { chunk_index: 0 }, { content: '' }])
+  assert(r.text === '' && r.chunks === 0, JSON.stringify(r))
+})
+check('短巧合前缀不被当成重叠', () => {
+  const { text } = chunks.stitchChunks([
+    { chunk_index: 0, content: '| a |' },
+    { chunk_index: 1, content: '| a | b | c | 后面还有很长一段正文内容' }
+  ])
+  assert(text.includes('| a | b | c |'), text)
 })
 
 if (failed) {
