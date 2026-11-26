@@ -386,6 +386,41 @@
     return `${s}/api/v1`;
   }
 
+  // kb-agent 代理的默认地址。单独一个地址是因为公司那层反代只转发 9527/18080，
+  // 8091 不在同域下；设置里可覆盖（agentBase）。
+  const DEFAULT_AGENT_BASE = 'http://192.168.1.234:8091';
+
+  // 检索范围：默认只查当前选中的库，显式切 all 才翻遍可访问库。
+  // 混检的代价见 ask 里的注释（无关碎片会占满榜单，答案和引用一起变错）。
+  function resolveAskKbIds() {
+    const cfg = loadCfg();
+    if (cfg.askScope === 'all') {
+      return (cachedAskKbIds && cachedAskKbIds.length) ? cachedAskKbIds : (cfg.kbId ? [cfg.kbId] : []);
+    }
+    return cfg.kbId ? [cfg.kbId] : ((cachedAskKbIds && cachedAskKbIds.length) ? cachedAskKbIds : []);
+  }
+
+  // SSE 逐行解析：知识库问答和 agent 通道共用同一套事件格式
+  async function pumpSse(res) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line.startsWith('data:')) continue;
+        try {
+          emitLocal('chat:event', JSON.parse(line.slice(5).trim()));
+        } catch {}
+      }
+    }
+  }
+
   async function apiRequest(path, options = {}, retried = false) {
     const { skipAuthRefresh, ...fetchOptions } = options;
     const doFetch = async () => {
@@ -853,6 +888,58 @@
       return { ok: true, scope: next };
     },
 
+    // ---------- 窄 agent 通道 ----------
+    // 工具循环跑在独立的 kb-agent 代理里（Agnes function calling），不是 WeKnora 的
+    // agent 引擎——那个在本部署里没接进问答链路（见 .workbuddy/memory/2026-11-24.md）。
+    // 检索范围仍由客户端决定，模型只能决定「查不查、查什么词」，不能决定搜哪个库。
+    agentBase: () => String(loadCfg().agentBase || DEFAULT_AGENT_BASE).replace(/\/+$/, ''),
+    agentEnabled: () => !!loadCfg().useAgent,
+    setAgent: (on) => {
+      saveCfg({ useAgent: !!on });
+      return { ok: true, on: !!on };
+    },
+    setAgentBase: (u) => {
+      saveCfg({ agentBase: String(u || '').trim() });
+      return { ok: true, base: String(u || '').trim() || DEFAULT_AGENT_BASE };
+    },
+
+    askAgent: async ({ query }) => {
+      const kbIds = resolveAskKbIds();
+      if (!kbIds.length) return { error: '还没选知识库，agent 模式需要先指定检索范围' };
+      if (!query) return { error: '问题为空' };
+
+      emitLocal('chat:event', { response_type: 'agent_query' });
+      const url = `${String(loadCfg().agentBase || DEFAULT_AGENT_BASE).replace(/\/+$/, '')}/tool-chat`;
+      const headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream'
+      };
+      const cfg = loadCfg();
+      if (cfg.token) headers['Authorization'] = `Bearer ${cfg.token}`;
+      if (cfg.homeTenantId) headers['X-Tenant-ID'] = String(cfg.homeTenantId);
+
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ query, kb_ids: kbIds })
+        });
+        if (!res.ok) {
+          const t = await res.text();
+          throw new Error(`agent 服务返回 ${res.status}${t ? '：' + t.slice(0, 120) : ''}`);
+        }
+        await pumpSse(res);
+        emitLocal('chat:event', { response_type: 'complete' });
+        return { ok: true };
+      } catch (e) {
+        const msg = /Failed to fetch|NetworkError|Load failed/i.test(e.message || '')
+          ? `连不上 agent 服务（${url}），检查服务是否在跑、地址是否可达`
+          : e.message;
+        emitLocal('chat:event', { response_type: 'error', content: msg });
+        return { error: msg };
+      }
+    },
+
     // 问答流
     ask: async ({ query, attachmentIds = [] }) => {
       const cfg = loadCfg();
@@ -881,13 +968,9 @@
         // 检索范围默认只查当前选中的库。把 11 个库（含别人的只读共享库）混在一起检索，
         // 无关库的碎片会把榜单前几名占满，答案和引用一起变错——2026-11-16 那条
         // 「引用到 storyboard-template.html」就是这么来的。要全量翻，得用户显式切到 all。
-        const scopeAll = cfg.askScope === 'all';
-        const poolIds = scopeAll
-          ? ((cachedAskKbIds && cachedAskKbIds.length) ? cachedAskKbIds : (cfg.kbId ? [cfg.kbId] : []))
-          : (cfg.kbId ? [cfg.kbId] : ((cachedAskKbIds && cachedAskKbIds.length) ? cachedAskKbIds : []));
         const payload = {
           query,
-          knowledge_base_ids: poolIds
+          knowledge_base_ids: resolveAskKbIds()
         };
         if (attachmentIds && attachmentIds.length) {
           payload.attachment_ids = attachmentIds;
@@ -921,25 +1004,7 @@
           throw new Error(`问答请求失败: ${errText || res.status}`);
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          let idx;
-          while ((idx = buf.indexOf('\n')) >= 0) {
-            const line = buf.slice(0, idx).trim();
-            buf = buf.slice(idx + 1);
-            if (!line.startsWith('data:')) continue;
-            try {
-              const ev = JSON.parse(line.slice(5).trim());
-              emitLocal('chat:event', ev);
-            } catch {}
-          }
-        }
+        await pumpSse(res);
 
         emitLocal('chat:event', { response_type: 'complete' });
         if (activeSessionId) localStorage.setItem('deskpet_last_session', activeSessionId);

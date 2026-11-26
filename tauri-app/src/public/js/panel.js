@@ -19,6 +19,8 @@ const el = {
   scopeRow: $('scopeRow'),
   btnScope: $('btnScope'),
   scopeLabel: $('scopeLabel'),
+  btnAgent: $('btnAgent'),
+  agentLabel: $('agentLabel'),
   chat: $('chat'),
   chatEmpty: $('chatEmpty'),
   queueWrap: $('queueWrap'),
@@ -79,6 +81,9 @@ let askScope = null
 // 实际的检索范围：'current' 只查当前库（默认），'all' 翻遍工作区所有库。
 // 由 listKBs 返回的 scope 字段同步，切换时落盘到 cfg（bridge 的 saveCfg）。
 let askScopeMode = 'current'
+// 深度检索（agent 模式）：交给 kb-agent 的工具循环，模型自己决定查不查、查几次。
+// 关闭时走原来的一次性 RAG，行为与旧版一致。
+let agentOn = false
 let switching = false
 let busy = false
 let stream = null
@@ -596,6 +601,7 @@ async function refreshKBs(force = false) {
   kbGroups = r.groups || []
   askScope = r.ask || null
   askScopeMode = r.scope === 'all' ? 'all' : 'current'
+  if (window.pet.agentEnabled) agentOn = !!window.pet.agentEnabled()
   const all = flatKBs()
   if (!all.length) {
     el.kbName.textContent = '没有可用知识库'
@@ -669,6 +675,14 @@ function renderScope() {
         + `\n\n无关库多了会把答案和引用带偏，点一下改回只查当前库${curName ? `「${curName}」` : ''}`
       : `只检索${curName ? `「${curName}」` : '当前选中的库'}这一个库`
         + (n > 1 ? `\n\n点一下可改为检索全部 ${n} 个库（更慢，且容易混进无关文档）` : '')
+    if (el.btnAgent) {
+      el.btnAgent.classList.toggle('scope-chip--all', agentOn)
+      if (el.agentLabel) el.agentLabel.textContent = agentOn ? '深度检索' : '快问快答'
+      el.btnAgent.title = agentOn
+        ? '已开启深度检索：模型自己决定要不要查库、查几次（最多三轮），'
+          + '也能回答"库里没有 + 需要实时数据"这类组合问题\n\n点一下改回一次性检索'
+        : '现在是一次性检索：问一次查一次，2~3 秒\n\n点一下开启深度检索（多轮工具调用，稍慢但更准）'
+    }
   }
 
   const base = n < total ? `回答基于 ${n}/${total} 个库` : `回答基于 ${n} 个库`
@@ -1009,9 +1023,9 @@ function addAssistant() {
   const status = document.createElement('div')
   status.className = 'status'
   const n = (askScope && askScope.count) || 0
-  status.textContent = (askScopeMode === 'all' && n > 1)
-    ? `正在检索 ${n} 个知识库…`
-    : '正在检索知识库…'
+  status.textContent = agentOn
+    ? '正在理解问题…'
+    : ((askScopeMode === 'all' && n > 1) ? `正在检索 ${n} 个知识库…` : '正在检索知识库…')
   const text = document.createElement('span')
   b.appendChild(status)
   b.appendChild(text)
@@ -1615,6 +1629,38 @@ function renderError(text) {  hideEmpty()
   scrollToBottom()
 }
 
+/* 天气工具的渲染壳：先摆占位，取到数据换成卡片，失败换成降级提示。
+   全程不碰 /knowledge-chat，也不写会话历史——实时数据不该混进知识库问答记录。 */
+async function runWeatherTool(wx) {
+  hideEmpty()
+  const wrap = document.createElement('div')
+  wrap.className = 'msg'
+  const holder = document.createElement('div')
+  holder.className = 'bubble-a wx'
+  const loading = document.createElement('div')
+  loading.className = 'wx-foot'
+  loading.textContent = wx.guessed
+    ? `正在按${wx.city}查${wx.dayLabel}的天气…`
+    : `正在查${wx.city}${wx.dayLabel}的天气…`
+  holder.appendChild(loading)
+  wrap.appendChild(holder)
+  el.chat.appendChild(wrap)
+  scrollToBottom()
+
+  // query 内部已把所有失败收成 ok:false；这里再兜一层，避免 DOM 构建异常把占位留在界面上
+  let r
+  try {
+    r = await window.Weather.query(wx)
+  } catch (e) {
+    r = { ok: false, error: (e && e.message) || '未知错误' }
+  }
+  const next = r.ok
+    ? window.Weather.buildCard(r.data)
+    : window.Weather.buildError(r.error, wx)
+  wrap.replaceChild(next, holder)
+  scrollToBottom()
+}
+
 async function send() {
   const typed = el.input.value.trim()
   // 只挂了附件、没写问题：给一个能对上话的默认问法
@@ -1632,6 +1678,52 @@ async function send() {
 
   const files = attachList.slice()
   addUser(query, files.map((a) => a.name))
+
+  // 深度检索：工具循环交给 kb-agent，模型自己决定要不要查、查几次。
+  // 带附件时不走——附件是 WeKnora 的一次性上下文，agent 通道还不支持。
+  if (agentOn && !files.length) {
+    stream = addAssistant()
+    try {
+      await window.pet.askAgent({ query })
+    } catch (e) {
+      renderError('深度检索出错：' + ((e && e.message) || e))
+    }
+    if (stream && !stream.finished) finishStream(stream)
+    stream = null
+    busy = false
+    el.btnSend.disabled = false
+    try {
+      window.pet.setPetState('idle')
+    } catch {}
+    el.input.focus()
+    try {
+      window.pet.smokeDone()
+    } catch {}
+    return
+  }
+
+  // 快问快答模式下，实时天气仍走本地直连：不依赖 agent 服务，2~3 秒就能出卡片
+  const wx = !files.length && window.Weather ? window.Weather.detect(query) : null
+  if (wx) {
+    try {
+      await runWeatherTool(wx)
+    } catch (e) {
+      renderError('天气查询出错：' + ((e && e.message) || e))
+    }
+    attachList = []
+    renderAttachStrip()
+    busy = false
+    el.btnSend.disabled = false
+    try {
+      window.pet.setPetState('idle')
+    } catch {}
+    el.input.focus()
+    try {
+      window.pet.smokeDone()
+    } catch {}
+    return
+  }
+
   const s = addAssistant()
   stream = s
 
@@ -1699,6 +1791,22 @@ if (el.btnScope) {
     toast(askScopeMode === 'all'
       ? '改为检索工作区全部知识库（更慢，可能混进无关文档）'
       : '改为只检索当前知识库')
+  })
+}
+
+if (el.btnAgent) {
+  el.btnAgent.addEventListener('click', async () => {
+    if (busy) {
+      toast('正在回答，答完再切模式')
+      return
+    }
+    const next = !agentOn
+    const r = await window.pet.setAgent(next)
+    agentOn = !!(r && r.on)
+    renderScope()
+    toast(agentOn
+      ? '深度检索已开：模型会自己决定查不查、查几次'
+      : '改回快问快答：问一次查一次')
   })
 }
 
@@ -2510,7 +2618,12 @@ window.pet.onChatEvent((ev) => {
   if (t === 'agent_query') {
     if (s.status) s.status.textContent = '正在理解问题…'
   } else if (t === 'tool_call') {
-    if (s.status) s.status.textContent = '正在检索知识库…'
+    if (s.status) {
+      const n = ev.tool_name || ''
+      s.status.textContent = n === 'get_weather'
+        ? '正在查天气…'
+        : (n === 'search_knowledge' ? '正在检索知识库…' : '正在处理…')
+    }
   } else if (t === 'references') {
     // references 事件先于正文到达，此刻答案还是空的，只能先按召回顺序摆；
     // 等 complete 时会用完整正文重排一次（见 finishStream）

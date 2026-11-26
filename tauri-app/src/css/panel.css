@@ -518,6 +518,31 @@ html, body {
 .doc-body .md-h3 { font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
 .doc-error { color: var(--danger); font-size: 12px; }
 
+/* 天气卡片：实时数据，视觉上与知识库答案分开，避免被当成「库里有这条」 */
+.wx { white-space: normal; padding: 11px 13px; max-width: 560px; }
+.wx-head { display: flex; align-items: baseline; gap: 8px; }
+.wx-city { font-size: 14px; font-weight: 500; color: var(--ink); }
+.wx-day { font-size: 11.5px; color: var(--ink-3); }
+.wx-main { display: flex; align-items: baseline; gap: 10px; margin: 5px 0 0; }
+.wx-temp { font-size: 22px; font-weight: 500; letter-spacing: -0.5px; color: var(--ink); }
+.wx-hi { color: var(--warn); }
+.wx-lo { color: #2b6f9e; }
+.wx-sep { font-size: 15px; color: var(--ink-3); margin: 0 1px; }
+.wx-cond { font-size: 13px; color: var(--ink-2); }
+.wx-advice { margin-top: 7px; font-size: 12.5px; color: var(--ink-2); line-height: 1.65; }
+.wx-meta { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 6px; font-size: 11.5px; color: var(--ink-3); }
+.wx-foot {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+  font-size: 11px;
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+.wx > .wx-foot:only-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.wx-err-title { font-size: 13px; font-weight: 500; color: var(--warn); }
+.wx-err-body { margin-top: 4px; font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
+
 .lowconf {
   margin-top: 8px;
   font-size: 11.5px;

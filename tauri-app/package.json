@@ -1,13 +1,13 @@
 {
   "name": "kb-deskpet-tauri",
   "private": true,
-  "version": "0.8.28",
+  "version": "0.8.29",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/check-syntax.mjs && node scripts/test-md.mjs && node scripts/test-auth.mjs && vite build",
-    "check": "node scripts/check-syntax.mjs && node scripts/test-md.mjs && node scripts/test-auth.mjs",
-    "test": "node scripts/test-md.mjs && node scripts/test-auth.mjs",
+    "build": "node scripts/check-syntax.mjs && node scripts/test-md.mjs && node scripts/test-auth.mjs && node scripts/test-weather.mjs && vite build",
+    "check": "node scripts/check-syntax.mjs && node scripts/test-md.mjs && node scripts/test-auth.mjs && node scripts/test-weather.mjs",
+    "test": "node scripts/test-md.mjs && node scripts/test-auth.mjs && node scripts/test-weather.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
